@@ -68,6 +68,18 @@ function App(): JSX.Element {
   };
   const [walletJson, setWalletJson] = useState<string>('(nessun wallet ancora)');
 
+  async function checkHealth() {
+    try {
+      const res = await fetch('http://127.0.0.1:3000/api/health');
+      const body = await res.json();
+      setWalletJson(JSON.stringify(body, null, 2));
+      console.log('Health', body);
+    } catch (err) {
+      setWalletJson(JSON.stringify(err, null, 2));
+      console.log('Errore health', err);
+    }
+  }
+
   async function runDemo() {
     try {
       // 1) Attiva e ottieni token
@@ -115,6 +127,7 @@ function App(): JSX.Element {
             <Text style={styles.sectionDescription}>
               Demo con userId={DEMO_USER_ID} e hostId={DEMO_HOST_ID}
             </Text>
+            <Button title="/api/health" onPress={checkHealth} />
             <Button title="Esegui demo" onPress={runDemo} />
             <Text style={[styles.code, {color: isDarkMode ? Colors.lighter : Colors.darker}]}>
               {walletJson}
