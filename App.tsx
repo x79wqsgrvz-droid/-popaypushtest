@@ -5,17 +5,19 @@
  * @format
  */
 
-import React from 'react';
+import React, {useState} from 'react';
 import type {PropsWithChildren} from 'react';
 import {
   SafeAreaView,
   ScrollView,
+  Button,
   StatusBar,
   StyleSheet,
   Text,
   useColorScheme,
   View,
 } from 'react-native';
+import {activate, getMyWallet} from './src/api/client';
 
 import {
   Colors,
@@ -28,6 +30,9 @@ import {
 type SectionProps = PropsWithChildren<{
   title: string;
 }>;
+
+const DEMO_USER_ID = 1;
+const DEMO_HOST_ID = 1;
 
 function Section({children, title}: SectionProps): JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
@@ -61,6 +66,23 @@ function App(): JSX.Element {
   const backgroundStyle = {
     backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
   };
+  const [walletJson, setWalletJson] = useState<string>('(nessun wallet ancora)');
+
+  async function runDemo() {
+    try {
+      // 1) Attiva e ottieni token
+      const activation = await activate(DEMO_USER_ID, DEMO_HOST_ID);
+      // 2) Usa token per leggere il wallet
+      const me = await getMyWallet(DEMO_USER_ID, activation.token);
+      const pretty = JSON.stringify(me.wallet, null, 2);
+      setWalletJson(pretty);
+      // log debug
+      console.log('Wallet /me', me.wallet);
+    } catch (err) {
+      setWalletJson(JSON.stringify(err, null, 2));
+      console.log('Errore demo auth', err);
+    }
+  }
 
   return (
     <SafeAreaView style={backgroundStyle}>
@@ -89,6 +111,15 @@ function App(): JSX.Element {
           <Section title="Learn More">
             Read the docs to discover what to do next:
           </Section>
+          <Section title="PoPay Demo">
+            <Text style={styles.sectionDescription}>
+              Demo con userId={DEMO_USER_ID} e hostId={DEMO_HOST_ID}
+            </Text>
+            <Button title="Esegui demo" onPress={runDemo} />
+            <Text style={[styles.code, {color: isDarkMode ? Colors.lighter : Colors.darker}]}>
+              {walletJson}
+            </Text>
+          </Section>
           <LearnMoreLinks />
         </View>
       </ScrollView>
@@ -112,6 +143,10 @@ const styles = StyleSheet.create({
   },
   highlight: {
     fontWeight: '700',
+  },
+  code: {
+    fontFamily: 'Menlo',
+    fontSize: 12,
   },
 });
 
