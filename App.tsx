@@ -17,10 +17,12 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  TextInput,
 } from 'react-native';
 import {Colors} from 'react-native/Libraries/NewAppScreen';
 import {
   activate,
+  activateByCode,
   getMyWallet,
   listFlashOffersNearby,
   getFlashOfferDetail,
@@ -49,16 +51,20 @@ function App(): JSX.Element {
   };
   const [activeTab, setActiveTab] = useState<TabKey>('offers');;
   const [token, setToken] = useState<string | null>(null);
+  const [authUserId, setAuthUserId] = useState<number>(DEMO_USER_ID);
+  const [authHostId, setAuthHostId] = useState<number>(DEMO_HOST_ID);
   const [wallet, setWallet] = useState<any | null>(null);
   const [offers, setOffers] = useState<FlashOfferListItem[]>([]);
   const [selectedOffer, setSelectedOffer] = useState<FlashOfferDetail | null>(null);
   const [bookings, setBookings] = useState<Reservation[]>([]);
   const [status, setStatus] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
+  const [accessCode, setAccessCode] = useState<string>('');
+  const [transactions, setTransactions] = useState<WalletTx[]>([]);
 
   async function ensureToken() {
     if (token) return token;
-    const activation = await activate(DEMO_USER_ID, DEMO_HOST_ID);
+    const activation = await activate(authUserId, authHostId);
     setToken(activation.token);
     return activation.token;
   }
@@ -66,14 +72,14 @@ function App(): JSX.Element {
   async function ensureWallet() {
     if (wallet) return wallet;
     const authToken = await ensureToken();
-    const me = await getMyWallet(DEMO_USER_ID, authToken);
+    const me = await getMyWallet(authUserId, authToken);
     setWallet(me.wallet);
     return me.wallet;
   }
 
   async function refreshWallet() {
     const authToken = await ensureToken();
-    const me = await getMyWallet(DEMO_USER_ID, authToken);
+    const me = await getMyWallet(authUserId, authToken);
     setWallet(me.wallet);
     return me.wallet;
   }
@@ -132,7 +138,7 @@ function App(): JSX.Element {
     try {
       const w = await ensureWallet();
       const created = await createReservation({
-        userId: DEMO_USER_ID,
+        userId: authUserId,
         businessId: offer.merchantId,
         flashOfferId: offer.id,
         depositAmount: DEPOSIT_AMOUNT,
@@ -179,6 +185,9 @@ function App(): JSX.Element {
     setStatus('');
     try {
       await refreshWallet();
+      const authToken = await ensureToken();
+      const tx = await getMyTransactions(authUserId, authToken, 20);
+      setTransactions(tx.items);
     } catch (err) {
       setStatus(JSON.stringify(err));
     } finally {
@@ -250,6 +259,21 @@ function App(): JSX.Element {
         ) : (
           <Text style={styles.subtitle}>Nessun wallet caricato.</Text>
         )}
+        <Text style={styles.subtitle}>Transazioni</Text>
+        {transactions.length === 0 ? (
+          <Text style={styles.subtitle}>Nessuna transazione.</Text>
+        ) : (
+          transactions.map((t) => (
+            <View key={t.id} style={styles.card}>
+              <Text style={styles.cardTitle}>{t.merchant?.name || 'Esercente'}</Text>
+              <Text style={styles.cardMeta}>{new Date(t.when).toLocaleString()}</Text>
+              <Text style={styles.cardMeta}>Importo: € {t.net_amount ?? t.net_spent}</Text>
+              {t.savings != null ? (
+                <Text style={styles.cardMeta}>Risparmio: € {t.savings.toFixed(2)}</Text>
+              ) : null}
+            </View>
+          ))
+        )}
         {status ? <Text style={styles.errorText}>{status}</Text> : null}
       </ScrollView>
     );
@@ -259,8 +283,44 @@ function App(): JSX.Element {
     return (
       <View style={styles.tabContent}>
         <Text style={styles.title}>Profilo</Text>
-        <Text style={styles.subtitle}>userId={DEMO_USER_ID} • hostId={DEMO_HOST_ID}</Text>
+        <Text style={styles.subtitle}>userId={authUserId} • hostId={authHostId}</Text>
         <Text style={styles.subtitle}>Token: {token ? `${token.slice(0, 8)}…` : 'non attivo'}</Text>
+        <Text style={styles.subtitle}>Attiva via codice</Text>
+        <TextInput
+          value={accessCode}
+          onChangeText={setAccessCode}
+          placeholder="Inserisci access_code"
+          autoCapitalize="characters"
+          style={styles.input}
+        />
+        <TouchableOpacity
+          style={styles.primaryBtn}
+          onPress={async () => {
+            setLoading(true);
+            setStatus('');
+            try {
+              const res = await activateByCode(accessCode.trim());
+              setToken(res.token);
+              setAuthUserId(res.userId);
+              setAuthHostId(res.hostId);
+              setWallet(null);
+              setBookings([]);
+              Alert.alert('Attivazione riuscita', `Token: ${res.token.slice(0, 8)}…`);
+            } catch (err) {
+              console.log('Errore activateByCode', err);
+              const msg =
+                typeof err === 'string'
+                  ? err
+                  : (err as any)?.body?.error || (err as any)?.message || JSON.stringify(err);
+              setStatus(msg);
+              Alert.alert('Errore', msg);
+            } finally {
+              setLoading(false);
+            }
+          }}>
+          <Text style={styles.primaryBtnText}>Attiva con codice</Text>
+        </TouchableOpacity>
+        {status ? <Text style={styles.errorText}>{status}</Text> : null}
       </View>
     );
   }
@@ -387,6 +447,15 @@ const styles = StyleSheet.create({
     fontFamily: 'Menlo',
     fontSize: 12,
     marginTop: 12,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 10,
+    backgroundColor: '#fff',
   },
   tabBar: {
     flexDirection: 'row',

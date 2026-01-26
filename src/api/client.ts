@@ -6,6 +6,7 @@ type HttpError = {
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:3000";
+const FORCE_LOCALHOST_BACKEND = true;
 const DEV_HOST = "192.168.1.29";
 
 function getMetroHost(): string | null {
@@ -19,6 +20,7 @@ function getMetroHost(): string | null {
 function getBaseUrl() {
   const envBase = process.env.POPAY_API_BASE_URL;
   if (envBase) return envBase.replace(/\/+$/, "");
+  if (FORCE_LOCALHOST_BACKEND) return "http://127.0.0.1:3000";
   const metroHost = getMetroHost();
   if (metroHost) {
     if (metroHost === "localhost" || metroHost === "127.0.0.1") {
@@ -60,8 +62,40 @@ export async function activate(userId: number, hostId: number) {
   });
 }
 
+export async function activateByCode(accessCode: string) {
+  return request<{ ok: true; token: string; validFrom: string; validTo: string; userId: number; hostId: number }>(
+    "/api/activate-by-code",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accessCode }),
+    }
+  );
+}
+
 export async function getMyWallet(userId: number, token: string) {
   return request<{ wallet: any }>("/api/wallets/me", {
+    method: "GET",
+    headers: {
+      "X-User-Id": String(userId),
+      "X-Activation-Token": token,
+    },
+  });
+}
+
+export type WalletTx = {
+  id: number;
+  when: string;
+  description: string | null;
+  net_spent: string;
+  gross_amount?: number | null;
+  net_amount?: number | null;
+  savings?: number | null;
+  merchant: { id: number; name: string; category: string | null } | null;
+};
+
+export async function getMyTransactions(userId: number, token: string, limit = 10) {
+  return request<{ count: number; items: WalletTx[] }>(`/api/me/transactions?limit=${limit}`, {
     method: "GET",
     headers: {
       "X-User-Id": String(userId),
