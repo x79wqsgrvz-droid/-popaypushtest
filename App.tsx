@@ -6,59 +6,40 @@
  */
 
 import React, {useState} from 'react';
-import type {PropsWithChildren} from 'react';
 import {
   SafeAreaView,
-  ScrollView,
-  Button,
   StatusBar,
   StyleSheet,
   Text,
   useColorScheme,
   View,
+  TouchableOpacity,
+  ScrollView,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
-import {activate, getMyWallet} from './src/api/client';
-
+import {Colors} from 'react-native/Libraries/NewAppScreen';
 import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
-
-type SectionProps = PropsWithChildren<{
-  title: string;
-}>;
+  activate,
+  getMyWallet,
+  listFlashOffersNearby,
+  getFlashOfferDetail,
+  createReservation,
+  holdDeposit,
+  getReservation,
+  cancelReservation,
+  type FlashOfferListItem,
+  type FlashOfferDetail,
+  type Reservation,
+} from './src/api/client';
 
 const DEMO_USER_ID = 1;
 const DEMO_HOST_ID = 1;
+const DEMO_CITY = 'Camerota';
+const DEPOSIT_AMOUNT = 5;
+const DEPOSIT_CURRENCY = 'EUR';
 
-function Section({children, title}: SectionProps): JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
-  return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
-    </View>
-  );
-}
+type TabKey = 'offers' | 'bookings' | 'wallet' | 'profile';
 
 function App(): JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
@@ -66,100 +47,368 @@ function App(): JSX.Element {
   const backgroundStyle = {
     backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
   };
-  const [walletJson, setWalletJson] = useState<string>('(nessun wallet ancora)');
+  const [activeTab, setActiveTab] = useState<TabKey>('offers');;
+  const [token, setToken] = useState<string | null>(null);
+  const [wallet, setWallet] = useState<any | null>(null);
+  const [offers, setOffers] = useState<FlashOfferListItem[]>([]);
+  const [selectedOffer, setSelectedOffer] = useState<FlashOfferDetail | null>(null);
+  const [bookings, setBookings] = useState<Reservation[]>([]);
+  const [status, setStatus] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
 
-  async function checkHealth() {
+  async function ensureToken() {
+    if (token) return token;
+    const activation = await activate(DEMO_USER_ID, DEMO_HOST_ID);
+    setToken(activation.token);
+    return activation.token;
+  }
+
+  async function ensureWallet() {
+    if (wallet) return wallet;
+    const authToken = await ensureToken();
+    const me = await getMyWallet(DEMO_USER_ID, authToken);
+    setWallet(me.wallet);
+    return me.wallet;
+  }
+
+  async function refreshWallet() {
+    const authToken = await ensureToken();
+    const me = await getMyWallet(DEMO_USER_ID, authToken);
+    setWallet(me.wallet);
+    return me.wallet;
+  }
+
+  async function refreshBookings() {
+    const ids = bookings.map((b) => b.id);
+    if (ids.length === 0) return;
+    const results = await Promise.all(
+      ids.map((id) =>
+        getReservation(id)
+          .then((r) => r.reservation)
+          .catch(() => null)
+      )
+    );
+    setBookings(results.filter(Boolean) as Reservation[]);
+  }
+
+  async function loadReservations() {
+    await refreshBookings();
+  }
+
+  async function loadOffers() {
+    setLoading(true);
+    setStatus('');
     try {
-      const res = await fetch('http://127.0.0.1:3000/api/health');
-      const body = await res.json();
-      setWalletJson(JSON.stringify(body, null, 2));
-      console.log('Health', body);
+      const res = await listFlashOffersNearby(DEMO_CITY);
+      setOffers(res.items);
+      setSelectedOffer(null);
+      if (res.items.length === 0) {
+        setStatus('Nessuna offerta disponibile');
+      }
     } catch (err) {
-      setWalletJson(JSON.stringify(err, null, 2));
-      console.log('Errore health', err);
+      setOffers([]);
+      setStatus('Nessuna offerta disponibile');
+    } finally {
+      setLoading(false);
     }
   }
 
-  async function runDemo() {
+  async function openOffer(id: number) {
+    setLoading(true);
+    setStatus('');
     try {
-      // 1) Attiva e ottieni token
-      const activation = await activate(DEMO_USER_ID, DEMO_HOST_ID);
-      // 2) Usa token per leggere il wallet
-      const me = await getMyWallet(DEMO_USER_ID, activation.token);
-      const pretty = JSON.stringify(me.wallet, null, 2);
-      setWalletJson(pretty);
-      // log debug
-      console.log('Wallet /me', me.wallet);
+      const detail = await getFlashOfferDetail(id);
+      setSelectedOffer(detail);
     } catch (err) {
-      setWalletJson(JSON.stringify(err, null, 2));
-      console.log('Errore demo auth', err);
+      setStatus(JSON.stringify(err));
+    } finally {
+      setLoading(false);
     }
+  }
+
+  async function bookOffer(offer: FlashOfferDetail | FlashOfferListItem) {
+    setLoading(true);
+    setStatus('');
+    try {
+      const w = await ensureWallet();
+      const created = await createReservation({
+        userId: DEMO_USER_ID,
+        businessId: offer.merchantId,
+        flashOfferId: offer.id,
+        depositAmount: DEPOSIT_AMOUNT,
+      });
+      await holdDeposit({
+        reservationId: created.id,
+        walletId: w.id,
+        amount: DEPOSIT_AMOUNT,
+        currency: DEPOSIT_CURRENCY,
+      });
+      Alert.alert(
+        'Prenotazione confermata',
+        `Prenotazione #${created.id} con garanzia €${DEPOSIT_AMOUNT}`
+      );
+      setBookings((prev) => [created, ...prev]);
+      setActiveTab('bookings');
+    } catch (err) {
+      setStatus(JSON.stringify(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function cancelBooking(reservationId: number, withRefund: boolean) {
+    setLoading(true);
+    setStatus('');
+    try {
+      const result = await cancelReservation(reservationId);
+      const policyLabel = result.policy === 'REFUND' ? 'Rimborsabile' : 'Non rimborsabile';
+      Alert.alert('Cancellazione', `${policyLabel} (cutoff ${result.cutoffMinutes} min)`);
+      await loadReservations();
+      await loadWallet();
+    } catch (err) {
+      const msg = typeof err === 'string' ? err : JSON.stringify(err);
+      setStatus(msg);
+      Alert.alert('Errore', msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadWallet() {
+    setLoading(true);
+    setStatus('');
+    try {
+      await refreshWallet();
+    } catch (err) {
+      setStatus(JSON.stringify(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function renderOffersTab() {
+    return (
+      <ScrollView contentContainerStyle={styles.tabContent}>
+        <Text style={styles.title}>Offerte</Text>
+        <Text style={styles.subtitle}>Città: {DEMO_CITY}</Text>
+        <TouchableOpacity style={styles.primaryBtn} onPress={loadOffers}>
+          <Text style={styles.primaryBtnText}>Carica offerte</Text>
+        </TouchableOpacity>
+        {loading ? <ActivityIndicator /> : null}
+        {status ? <Text style={styles.errorText}>{status}</Text> : null}
+        {offers.map((o) => (
+          <TouchableOpacity key={o.id} style={styles.card} onPress={() => openOffer(o.id)}>
+            <Text style={styles.cardTitle}>{o.title}</Text>
+            <Text style={styles.cardMeta}>€ {o.price} • {o.startsAt}</Text>
+          </TouchableOpacity>
+        ))}
+        {selectedOffer ? (
+          <View style={styles.detailCard}>
+            <Text style={styles.cardTitle}>{selectedOffer.title}</Text>
+            <Text style={styles.cardMeta}>{selectedOffer.description || '—'}</Text>
+            <Text style={styles.cardMeta}>€ {selectedOffer.price}</Text>
+            <TouchableOpacity style={styles.primaryBtn} onPress={() => bookOffer(selectedOffer)}>
+              <Text style={styles.primaryBtnText}>Prenota + garanzia €{DEPOSIT_AMOUNT}</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+      </ScrollView>
+    );
+  }
+
+  function renderBookingsTab() {
+    return (
+      <ScrollView contentContainerStyle={styles.tabContent}>
+        <Text style={styles.title}>Prenotazioni</Text>
+        {bookings.length === 0 ? <Text style={styles.subtitle}>Nessuna prenotazione ancora.</Text> : null}
+        {status ? <Text style={styles.errorText}>{status}</Text> : null}
+        {bookings.map((b) => (
+          <View key={b.id} style={styles.card}>
+            <Text style={styles.cardTitle}>Booking #{b.id}</Text>
+            <Text style={styles.cardMeta}>Status: {b.status || '—'}</Text>
+            <Text style={styles.cardMeta}>Deposit: {b.deposit_status || '—'}</Text>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => cancelBooking(b.id, true)}>
+              <Text style={styles.secondaryBtnText}>Cancella</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
+      </ScrollView>
+    );
+  }
+
+  function renderWalletTab() {
+    return (
+      <ScrollView contentContainerStyle={styles.tabContent}>
+        <Text style={styles.title}>Wallet</Text>
+        <TouchableOpacity style={styles.primaryBtn} onPress={loadWallet}>
+          <Text style={styles.primaryBtnText}>Carica wallet</Text>
+        </TouchableOpacity>
+        {wallet ? (
+          <Text style={[styles.code, {color: isDarkMode ? Colors.lighter : Colors.darker}]}>
+            {JSON.stringify(wallet, null, 2)}
+          </Text>
+        ) : (
+          <Text style={styles.subtitle}>Nessun wallet caricato.</Text>
+        )}
+        {status ? <Text style={styles.errorText}>{status}</Text> : null}
+      </ScrollView>
+    );
+  }
+
+  function renderProfileTab() {
+    return (
+      <View style={styles.tabContent}>
+        <Text style={styles.title}>Profilo</Text>
+        <Text style={styles.subtitle}>userId={DEMO_USER_ID} • hostId={DEMO_HOST_ID}</Text>
+        <Text style={styles.subtitle}>Token: {token ? `${token.slice(0, 8)}…` : 'non attivo'}</Text>
+      </View>
+    );
   }
 
   return (
-    <SafeAreaView style={backgroundStyle}>
+    <View style={{flex:1}}>
+      
+      <SafeAreaView style={[backgroundStyle,{flex:1}]}>
       <StatusBar
         barStyle={isDarkMode ? 'light-content' : 'dark-content'}
         backgroundColor={backgroundStyle.backgroundColor}
       />
-      <ScrollView
-        contentInsetAdjustmentBehavior="automatic"
-        style={backgroundStyle}>
-        <Header />
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.tsx</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <Section title="PoPay Demo">
-            <Text style={styles.sectionDescription}>
-              Demo con userId={DEMO_USER_ID} e hostId={DEMO_HOST_ID}
-            </Text>
-            <Button title="/api/health" onPress={checkHealth} />
-            <Button title="Esegui demo" onPress={runDemo} />
-            <Text style={[styles.code, {color: isDarkMode ? Colors.lighter : Colors.darker}]}>
-              {walletJson}
-            </Text>
-          </Section>
-          <LearnMoreLinks />
+      <View style={styles.screen}>
+        {activeTab === 'offers' && renderOffersTab()}
+        {activeTab === 'bookings' && renderBookingsTab()}
+        {activeTab === 'wallet' && renderWalletTab()}
+        {activeTab === 'profile' && renderProfileTab()}
+        <View style={styles.tabBar}>
+          <TabButton label="Offerte" active={activeTab === 'offers'} onPress={() => setActiveTab('offers')} />
+          <TabButton label="Prenotazioni" active={activeTab === 'bookings'} onPress={() => setActiveTab('bookings')} />
+          <TabButton label="Wallet" active={activeTab === 'wallet'} onPress={() => setActiveTab('wallet')} />
+          <TabButton label="Profilo" active={activeTab === 'profile'} onPress={() => setActiveTab('profile')} />
         </View>
-      </ScrollView>
+      </View>
     </SafeAreaView>
+    </View>
+  );
+}
+
+function TabButton({label, active, onPress}: {label: string; active: boolean; onPress: () => void}) {
+  return (
+    <TouchableOpacity style={[styles.tabBtn, active ? styles.tabBtnActive : null]} onPress={onPress}>
+      <Text style={[styles.tabLabel, active ? styles.tabLabelActive : null]}>{label}</Text>
+    </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
+  screen: {
+    flex: 1,
   },
-  sectionTitle: {
-    fontSize: 24,
+  tabContent: {
+    padding: 16,
+    paddingBottom: 96,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 12,
+  },
+  card: {
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#f2f2f2',
+    marginBottom: 10,
+  },
+  detailCard: {
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#eaeaea',
+    marginTop: 12,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  cardMeta: {
+    fontSize: 12,
+    color: '#444',
+    marginBottom: 4,
+  },
+  row: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  primaryBtn: {
+    backgroundColor: '#111',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 8,
+  },
+  primaryBtnText: {
+    color: '#fff',
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  secondaryBtn: {
+    backgroundColor: '#ddd',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    marginTop: 6,
+  },
+  secondaryBtnText: {
+    color: '#222',
     fontWeight: '600',
   },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
+  ghostBtn: {
+    borderWidth: 1,
+    borderColor: '#999',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    marginTop: 6,
   },
-  highlight: {
-    fontWeight: '700',
+  ghostBtnText: {
+    color: '#333',
+    fontWeight: '600',
+  },
+  errorText: {
+    color: '#c00',
+    fontSize: 12,
+    marginTop: 8,
   },
   code: {
     fontFamily: 'Menlo',
     fontSize: 12,
+    marginTop: 12,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: '#ddd',
+    backgroundColor: '#fff',
+    paddingVertical: 10,
+  },
+  tabBtn: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  tabBtnActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: '#000',
+  },
+  tabLabel: {
+    fontSize: 12,
+    color: '#666',
+  },
+  tabLabelActive: {
+    color: '#000',
   },
 });
 

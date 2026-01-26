@@ -75,3 +75,114 @@ export async function getHealth() {
     method: "GET",
   });
 }
+
+export type FlashOfferListItem = {
+  id: number;
+  merchantId: number;
+  title: string;
+  description: string | null;
+  price: string;
+  startsAt: string;
+  endsAt: string;
+  quantityAvailable: number | null;
+  quantityReserved: number | null;
+  createdAt: string;
+};
+
+export type FlashOfferDetail = FlashOfferListItem & {
+  merchant: {
+    id: number;
+    name: string;
+    category: string | null;
+    city: string | null;
+  } | null;
+};
+
+export async function listFlashOffersNearby(city: string) {
+  const q = encodeURIComponent(city);
+  return request<{ city: string; count: number; items: FlashOfferListItem[] }>(
+    `/api/flash-offers/nearby?city=${q}`
+  );
+}
+
+export async function getFlashOfferDetail(id: number) {
+  return request<FlashOfferDetail>(`/api/flash-offers/${id}`);
+}
+
+export type Reservation = {
+  id: number;
+  user_id?: number | null;
+  business_id?: number | null;
+  flash_offer_id?: number | null;
+  status?: string | null;
+  deposit_status?: string | null;
+  outcome?: string | null;
+  reserved_at?: string | null;
+  guarantee_amount?: number | null;
+};
+
+export async function createReservation(payload: {
+  userId: number;
+  businessId: number;
+  flashOfferId?: number | null;
+  depositAmount?: number | null;
+}) {
+  return request<Reservation>("/api/reservations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getReservation(id: number) {
+  return request<{ ok: true; reservation: Reservation }>(`/api/reservations/${id}`);
+}
+
+export async function updateReservation(
+  id: number,
+  payload: { status?: string; depositStatus?: string; outcome?: string }
+) {
+  return request<{ ok: true; reservation: Reservation }>(`/api/reservations/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function holdDeposit(payload: {
+  reservationId: number;
+  walletId: number;
+  amount: number;
+  currency: string;
+}) {
+  return request<{ ok: true }>(`/api/reservation-deposit/hold`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function releaseDeposit(payload: { reservationId: number }) {
+  return request<{ ok: true }>(`/api/reservation-deposit/release`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function forfeitDeposit(payload: { reservationId: number; reason?: string }) {
+  return request<{ ok: true }>(`/api/reservation-deposit/forfeit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function cancelReservation(id: number) {
+  return request<{ ok: true; reservationId: number; policy: string; cutoffMinutes: number }>(
+    `/api/reservations/${id}/cancel`,
+    {
+      method: "POST",
+    }
+  );
+}
