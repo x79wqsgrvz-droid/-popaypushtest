@@ -104,6 +104,29 @@ export async function getMyTransactions(userId: number, token: string, limit = 1
   });
 }
 
+export type WalletRefund = {
+  id: number;
+  wallet_id?: number;
+  user_id?: number;
+  type: string;
+  status: string;
+  amount: string;
+  note?: string | null;
+  created_at?: string;
+  processed_at?: string | null;
+};
+
+export async function getMyRefunds(userId: number, token: string, walletId?: number) {
+  const qs = walletId ? `?wallet_id=${walletId}` : "";
+  return request<WalletRefund[]>(`/api/me/refunds${qs}`, {
+    method: "GET",
+    headers: {
+      "X-User-Id": String(userId),
+      "X-Activation-Token": token,
+    },
+  });
+}
+
 export async function getHealth() {
   return request<{ status: string; timestamp: string }>("/api/health", {
     method: "GET",

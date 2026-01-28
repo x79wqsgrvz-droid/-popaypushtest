@@ -5,7 +5,7 @@
  * @format
  */
 
-import React, {useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {
   SafeAreaView,
   StatusBar,
@@ -18,6 +18,7 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  Linking,
 } from 'react-native';
 import {Colors} from 'react-native/Libraries/NewAppScreen';
 import {
@@ -30,9 +31,13 @@ import {
   holdDeposit,
   getReservation,
   cancelReservation,
+  getMyTransactions,
+  getMyRefunds,
   type FlashOfferListItem,
   type FlashOfferDetail,
   type Reservation,
+  type WalletTx,
+  type WalletRefund,
 } from './src/api/client';
 
 const DEMO_USER_ID = 1;
@@ -42,6 +47,11 @@ const DEPOSIT_AMOUNT = 5;
 const DEPOSIT_CURRENCY = 'EUR';
 
 type TabKey = 'offers' | 'bookings' | 'wallet' | 'profile';
+type BookingView = Reservation & {
+  offerTitle?: string | null;
+  merchantName?: string | null;
+  merchantCity?: string | null;
+};
 
 function App(): JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
@@ -56,11 +66,24 @@ function App(): JSX.Element {
   const [wallet, setWallet] = useState<any | null>(null);
   const [offers, setOffers] = useState<FlashOfferListItem[]>([]);
   const [selectedOffer, setSelectedOffer] = useState<FlashOfferDetail | null>(null);
-  const [bookings, setBookings] = useState<Reservation[]>([]);
+  const [bookings, setBookings] = useState<BookingView[]>([]);
   const [status, setStatus] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [accessCode, setAccessCode] = useState<string>('');
   const [transactions, setTransactions] = useState<WalletTx[]>([]);
+  const [refunds, setRefunds] = useState<WalletRefund[]>([]);
+
+  useEffect(() => {
+    // Auto-load iniziale per demo
+    loadOffers();
+    loadWallet();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'wallet') {
+      loadWallet();
+    }
+  }, [activeTab]);
 
   async function ensureToken() {
     if (token) return token;
@@ -87,6 +110,16 @@ function App(): JSX.Element {
   async function refreshBookings() {
     const ids = bookings.map((b) => b.id);
     if (ids.length === 0) return;
+    const metaById = new Map(
+      bookings.map((b) => [
+        b.id,
+        {
+          offerTitle: b.offerTitle ?? null,
+          merchantName: b.merchantName ?? null,
+          merchantCity: b.merchantCity ?? null,
+        },
+      ])
+    );
     const results = await Promise.all(
       ids.map((id) =>
         getReservation(id)
@@ -94,7 +127,10 @@ function App(): JSX.Element {
           .catch(() => null)
       )
     );
-    setBookings(results.filter(Boolean) as Reservation[]);
+    const merged = results
+      .filter(Boolean)
+      .map((r) => ({ ...(r as Reservation), ...(metaById.get(r!.id) || {}) })) as BookingView[];
+    setBookings(merged);
   }
 
   async function loadReservations() {
@@ -143,6 +179,10 @@ function App(): JSX.Element {
         flashOfferId: offer.id,
         depositAmount: DEPOSIT_AMOUNT,
       });
+      const merchantName =
+        'merchant' in offer ? offer.merchant?.name ?? null : null;
+      const merchantCity =
+        'merchant' in offer ? offer.merchant?.city ?? null : null;
       await holdDeposit({
         reservationId: created.id,
         walletId: w.id,
@@ -153,7 +193,15 @@ function App(): JSX.Element {
         'Prenotazione confermata',
         `Prenotazione #${created.id} con garanzia €${DEPOSIT_AMOUNT}`
       );
-      setBookings((prev) => [created, ...prev]);
+      setBookings((prev) => [
+        {
+          ...(created as Reservation),
+          offerTitle: offer.title,
+          merchantName,
+          merchantCity,
+        },
+        ...prev,
+      ]);
       setActiveTab('bookings');
     } catch (err) {
       setStatus(JSON.stringify(err));
@@ -184,12 +232,22 @@ function App(): JSX.Element {
     setLoading(true);
     setStatus('');
     try {
-      await refreshWallet();
+      const w = await refreshWallet();
+      console.log('[wallet] load', { authUserId, hasToken: !!token });
       const authToken = await ensureToken();
+      console.log('[wallet] token', authToken.slice(0, 8));
       const tx = await getMyTransactions(authUserId, authToken, 20);
+      console.log('[wallet] transactions', tx.items);
       setTransactions(tx.items);
+      const rf = await getMyRefunds(authUserId, authToken, w?.id);
+      setRefunds(rf);
     } catch (err) {
-      setStatus(JSON.stringify(err));
+      const msg =
+        typeof err === 'string'
+          ? err
+          : (err as any)?.body?.error || (err as any)?.message || JSON.stringify(err);
+      setStatus(msg);
+      Alert.alert('Errore wallet', msg);
     } finally {
       setLoading(false);
     }
@@ -226,6 +284,29 @@ function App(): JSX.Element {
   }
 
   function renderBookingsTab() {
+    const statusLabel = (s?: string | null) => {
+      switch (s) {
+        case 'held':
+          return 'Attiva';
+        case 'released':
+          return 'Cancellata (rimborsata)';
+        case 'forfeited':
+          return 'Cancellata (senza rimborso)';
+        default:
+          return '—';
+      }
+    };
+    const openMaps = (name?: string | null, city?: string | null) => {
+      const q = [name, city].filter(Boolean).join(' ');
+      if (!q) {
+        Alert.alert('Indicazioni', 'Dati esercente non disponibili.');
+        return;
+      }
+      const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+      Linking.openURL(url).catch(() => {
+        Alert.alert('Indicazioni', 'Impossibile aprire Google Maps.');
+      });
+    };
     return (
       <ScrollView contentContainerStyle={styles.tabContent}>
         <Text style={styles.title}>Prenotazioni</Text>
@@ -234,10 +315,23 @@ function App(): JSX.Element {
         {bookings.map((b) => (
           <View key={b.id} style={styles.card}>
             <Text style={styles.cardTitle}>Booking #{b.id}</Text>
-            <Text style={styles.cardMeta}>Status: {b.status || '—'}</Text>
-            <Text style={styles.cardMeta}>Deposit: {b.deposit_status || '—'}</Text>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={() => cancelBooking(b.id, true)}>
+            {b.offerTitle ? <Text style={styles.cardMeta}>{b.offerTitle}</Text> : null}
+            {b.merchantName ? (
+              <Text style={styles.cardMeta}>
+                {b.merchantName}{b.merchantCity ? ` • ${b.merchantCity}` : ''}
+              </Text>
+            ) : null}
+            <Text style={styles.cardMeta}>Stato: {statusLabel(b.deposit_status)}</Text>
+            <TouchableOpacity
+              style={[styles.secondaryBtn, (b.deposit_status === 'released' || b.deposit_status === 'forfeited') ? styles.btnDisabled : null]}
+              onPress={() => cancelBooking(b.id, true)}
+              disabled={b.deposit_status === 'released' || b.deposit_status === 'forfeited'}>
               <Text style={styles.secondaryBtnText}>Cancella</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.ghostBtn}
+              onPress={() => openMaps(b.merchantName, b.merchantCity)}>
+              <Text style={styles.ghostBtnText}>Indicazioni</Text>
             </TouchableOpacity>
           </View>
         ))}
@@ -246,6 +340,23 @@ function App(): JSX.Element {
   }
 
   function renderWalletTab() {
+    const totalSavings = transactions.reduce((sum, t) => sum + (t.savings ?? 0), 0);
+    const labelForTx = (t: WalletTx) => {
+      switch (t.description) {
+        case 'deposit_hold':
+          return 'Deposito prenotazione';
+        case 'deposit_release':
+          return 'Rilascio deposito';
+        case 'deposit_forfeit':
+          return 'Forfeit deposito';
+        case 'paid':
+          return 'Pagamento';
+        case 'prepared':
+          return 'Pagamento in attesa';
+        default:
+          return t.description || 'Transazione';
+      }
+    };
     return (
       <ScrollView contentContainerStyle={styles.tabContent}>
         <Text style={styles.title}>Wallet</Text>
@@ -253,24 +364,49 @@ function App(): JSX.Element {
           <Text style={styles.primaryBtnText}>Carica wallet</Text>
         </TouchableOpacity>
         {wallet ? (
-          <Text style={[styles.code, {color: isDarkMode ? Colors.lighter : Colors.darker}]}>
-            {JSON.stringify(wallet, null, 2)}
-          </Text>
+          <View style={styles.walletCard}>
+            <Text style={styles.walletBalance}>€ {Number(wallet.remaining_credit).toFixed(2)}</Text>
+            <Text style={styles.walletMeta}>Taglio: € {Number(wallet.initial_credit).toFixed(2)}</Text>
+            <Text style={styles.walletMeta}>Stato: {wallet.status}</Text>
+            <Text style={styles.walletMeta}>
+              Scadenza: {wallet.expires_at ? new Date(wallet.expires_at).toLocaleDateString() : '—'}
+            </Text>
+          </View>
         ) : (
           <Text style={styles.subtitle}>Nessun wallet caricato.</Text>
         )}
+        <View style={styles.savingsCard}>
+          <Text style={styles.savingsLabel}>Risparmio totale</Text>
+          <Text style={styles.savingsValue}>€ {totalSavings.toFixed(2)}</Text>
+        </View>
         <Text style={styles.subtitle}>Transazioni</Text>
         {transactions.length === 0 ? (
           <Text style={styles.subtitle}>Nessuna transazione.</Text>
         ) : (
           transactions.map((t) => (
             <View key={t.id} style={styles.card}>
-              <Text style={styles.cardTitle}>{t.merchant?.name || 'Esercente'}</Text>
+              <Text style={styles.cardTitle}>{labelForTx(t)}</Text>
+              <Text style={styles.cardMeta}>{t.merchant?.name || 'Esercente'}</Text>
               <Text style={styles.cardMeta}>{new Date(t.when).toLocaleString()}</Text>
               <Text style={styles.cardMeta}>Importo: € {t.net_amount ?? t.net_spent}</Text>
               {t.savings != null ? (
                 <Text style={styles.cardMeta}>Risparmio: € {t.savings.toFixed(2)}</Text>
               ) : null}
+            </View>
+          ))
+        )}
+        <Text style={styles.subtitle}>Rimborsi</Text>
+        {refunds.length === 0 ? (
+          <Text style={styles.subtitle}>Nessun rimborso.</Text>
+        ) : (
+          refunds.map((r) => (
+            <View key={r.id} style={styles.card}>
+              <Text style={styles.cardTitle}>Rimborso #{r.id}</Text>
+              <Text style={styles.cardMeta}>Tipo: {r.type} • Stato: {r.status}</Text>
+              <Text style={styles.cardMeta}>Importo: € {Number(r.amount).toFixed(2)}</Text>
+              <Text style={styles.cardMeta}>
+                Data: {r.created_at ? new Date(r.created_at).toLocaleString() : '—'}
+              </Text>
             </View>
           ))
         )}
@@ -306,6 +442,8 @@ function App(): JSX.Element {
               setWallet(null);
               setBookings([]);
               Alert.alert('Attivazione riuscita', `Token: ${res.token.slice(0, 8)}…`);
+              await loadOffers();
+              await loadWallet();
             } catch (err) {
               console.log('Errore activateByCode', err);
               const msg =
@@ -422,6 +560,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginTop: 6,
   },
+  btnDisabled: {
+    opacity: 0.5,
+  },
   secondaryBtnText: {
     color: '#222',
     fontWeight: '600',
@@ -447,6 +588,39 @@ const styles = StyleSheet.create({
     fontFamily: 'Menlo',
     fontSize: 12,
     marginTop: 12,
+  },
+  walletCard: {
+    backgroundColor: '#111',
+    padding: 16,
+    borderRadius: 14,
+    marginBottom: 12,
+  },
+  walletBalance: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  walletMeta: {
+    color: '#ddd',
+    fontSize: 12,
+    marginBottom: 2,
+  },
+  savingsCard: {
+    backgroundColor: '#f7f7f7',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  savingsLabel: {
+    color: '#555',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  savingsValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111',
   },
   input: {
     borderWidth: 1,
