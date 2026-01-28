@@ -19,6 +19,7 @@ import {
   Alert,
   TextInput,
   Linking,
+  Platform,
 } from 'react-native';
 import {Colors} from 'react-native/Libraries/NewAppScreen';
 import {
@@ -33,6 +34,7 @@ import {
   cancelReservation,
   getMyTransactions,
   getMyRefunds,
+  requestRefund,
   type FlashOfferListItem,
   type FlashOfferDetail,
   type Reservation,
@@ -46,6 +48,17 @@ const DEMO_CITY = 'Camerota';
 const DEPOSIT_AMOUNT = 5;
 const DEPOSIT_CURRENCY = 'EUR';
 
+const THEME = {
+  bg: '#F6F1E8',
+  bgAlt: '#FFF9F1',
+  ink: '#0F2A3D',
+  inkSoft: '#355166',
+  card: '#FFFFFF',
+  coral: '#E76F51',
+  coralDark: '#D45D43',
+  sage: '#7FA89B',
+  border: '#E8DED2',
+};
 type TabKey = 'offers' | 'bookings' | 'wallet' | 'profile';
 type BookingView = Reservation & {
   offerTitle?: string | null;
@@ -57,7 +70,7 @@ function App(): JSX.Element {
   const isDarkMode = useColorScheme() === 'dark';
 
   const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
+    backgroundColor: THEME.bg,
   };
   const [activeTab, setActiveTab] = useState<TabKey>('offers');;
   const [token, setToken] = useState<string | null>(null);
@@ -346,7 +359,7 @@ function App(): JSX.Element {
         case 'deposit_hold':
           return 'Deposito prenotazione';
         case 'deposit_release':
-          return 'Rilascio deposito';
+          return 'Deposito riaccreditato';
         case 'deposit_forfeit':
           return 'Forfeit deposito';
         case 'paid':
@@ -395,9 +408,63 @@ function App(): JSX.Element {
             </View>
           ))
         )}
-        <Text style={styles.subtitle}>Rimborsi</Text>
+        {status ? <Text style={styles.errorText}>{status}</Text> : null}
+      </ScrollView>
+    );
+  }
+
+  function renderProfileTab() {
+    const taglioDate = wallet?.activated_at || wallet?.created_at;
+    const hostAddress = [wallet?.hosts?.address, wallet?.hosts?.city, wallet?.hosts?.country]
+      .filter(Boolean)
+      .join(', ');
+    const checkoutDate = wallet?.users?.checkout_date ? new Date(wallet.users.checkout_date) : null;
+    const refundAvailableFrom = checkoutDate
+      ? new Date(checkoutDate.getFullYear(), checkoutDate.getMonth(), checkoutDate.getDate() + 1)
+      : null;
+    const refundAllowed =
+      !!wallet &&
+      wallet.status === 'ACTIVE' &&
+      Number(wallet.remaining_credit) > 0 &&
+      (!!refundAvailableFrom && new Date() >= refundAvailableFrom);
+    const hasPendingRefund = refunds.some((r) => r.status === 'REQUESTED' || r.status === 'PROCESSING');
+    const openHostMaps = () => {
+      const q = [wallet?.hosts?.name, hostAddress].filter(Boolean).join(' ');
+      if (!q) {
+        Alert.alert('Indicazioni', 'Dati host non disponibili.');
+        return;
+      }
+      const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+      Linking.openURL(url).catch(() => {
+        Alert.alert('Indicazioni', 'Impossibile aprire Google Maps.');
+      });
+    };
+    return (
+      <ScrollView contentContainerStyle={styles.tabContent}>
+        <Text style={styles.title}>Profilo</Text>
+        <Text style={styles.subtitle}>userId={authUserId} • hostId={authHostId}</Text>
+        <Text style={styles.subtitle}>Token: {token ? `${token.slice(0, 8)}…` : 'non attivo'}</Text>
+        <Text style={styles.subtitle}>Tagli acquistati</Text>
+        {wallet ? (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>€ {Number(wallet.initial_credit).toFixed(2)}</Text>
+            <Text style={styles.cardMeta}>
+              Host: {wallet.hosts?.name || '—'}
+            </Text>
+            {hostAddress ? <Text style={styles.cardMeta}>Indirizzo: {hostAddress}</Text> : null}
+            <Text style={styles.cardMeta}>
+              Data: {taglioDate ? new Date(taglioDate).toLocaleDateString() : '—'}
+            </Text>
+            <TouchableOpacity style={styles.ghostBtn} onPress={openHostMaps}>
+              <Text style={styles.ghostBtnText}>Torna al tuo host</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <Text style={styles.subtitle}>Nessun taglio disponibile.</Text>
+        )}
+        <Text style={styles.subtitle}>Rimborsi effettuati</Text>
         {refunds.length === 0 ? (
-          <Text style={styles.subtitle}>Nessun rimborso.</Text>
+          <Text style={styles.subtitle}>Nessun rimborso effettuato.</Text>
         ) : (
           refunds.map((r) => (
             <View key={r.id} style={styles.card}>
@@ -410,22 +477,44 @@ function App(): JSX.Element {
             </View>
           ))
         )}
-        {status ? <Text style={styles.errorText}>{status}</Text> : null}
-      </ScrollView>
-    );
-  }
-
-  function renderProfileTab() {
-    return (
-      <View style={styles.tabContent}>
-        <Text style={styles.title}>Profilo</Text>
-        <Text style={styles.subtitle}>userId={authUserId} • hostId={authHostId}</Text>
-        <Text style={styles.subtitle}>Token: {token ? `${token.slice(0, 8)}…` : 'non attivo'}</Text>
-        <Text style={styles.subtitle}>Attiva via codice</Text>
+        <Text style={styles.subtitle}>Rimborso saldo residuo</Text>
+        <TouchableOpacity
+          style={[styles.primaryBtn, (!refundAllowed || hasPendingRefund) ? styles.btnDisabled : null]}
+          onPress={async () => {
+            if (!refundAllowed || hasPendingRefund || !token) return;
+            setLoading(true);
+            setStatus('');
+            try {
+              await requestRefund(authUserId, token);
+              await loadWallet();
+              Alert.alert('Richiesta inviata', 'Il rimborso è stato richiesto.');
+            } catch (err) {
+              const msg =
+                typeof err === 'string'
+                  ? err
+                  : (err as any)?.body?.error || (err as any)?.message || JSON.stringify(err);
+              setStatus(msg);
+              Alert.alert('Errore rimborso', msg);
+            } finally {
+              setLoading(false);
+            }
+          }}
+          disabled={!refundAllowed || hasPendingRefund}>
+          <Text style={styles.primaryBtnText}>Richiedi rimborso</Text>
+        </TouchableOpacity>
+        {hasPendingRefund ? (
+          <Text style={styles.subtitle}>Hai già una richiesta in lavorazione.</Text>
+        ) : null}
+        {!refundAllowed && refundAvailableFrom ? (
+          <Text style={styles.subtitle}>
+            Disponibile dal {refundAvailableFrom.toLocaleDateString()}
+          </Text>
+        ) : null}
+        <Text style={styles.subtitle}>Inquadra il QR e attiva il tuo wallet</Text>
         <TextInput
           value={accessCode}
           onChangeText={setAccessCode}
-          placeholder="Inserisci access_code"
+          placeholder="Inserisci codice QR"
           autoCapitalize="characters"
           style={styles.input}
         />
@@ -456,10 +545,10 @@ function App(): JSX.Element {
               setLoading(false);
             }
           }}>
-          <Text style={styles.primaryBtnText}>Attiva con codice</Text>
+          <Text style={styles.primaryBtnText}>Inquadra il QR e attiva il tuo wallet</Text>
         </TouchableOpacity>
         {status ? <Text style={styles.errorText}>{status}</Text> : null}
-      </View>
+      </ScrollView>
     );
   }
 
@@ -467,6 +556,8 @@ function App(): JSX.Element {
     <View style={{flex:1}}>
       
       <SafeAreaView style={[backgroundStyle,{flex:1}]}>
+      <View style={styles.bgGlowTop} />
+      <View style={styles.bgGlowBottom} />
       <StatusBar
         barStyle={isDarkMode ? 'light-content' : 'dark-content'}
         backgroundColor={backgroundStyle.backgroundColor}
@@ -501,39 +592,52 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   tabContent: {
-    padding: 16,
-    paddingBottom: 96,
+    padding: 18,
+    paddingBottom: 110,
   },
   title: {
-    fontSize: 22,
+    fontSize: 24,
     fontWeight: '700',
+    color: THEME.ink,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
     marginBottom: 8,
   },
   subtitle: {
-    fontSize: 14,
-    color: '#666',
+    fontSize: 13,
+    color: THEME.inkSoft,
     marginBottom: 12,
   },
   card: {
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: '#f2f2f2',
-    marginBottom: 10,
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: THEME.card,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 2,
   },
   detailCard: {
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: '#eaeaea',
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: THEME.bgAlt,
     marginTop: 12,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   cardTitle: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: THEME.ink,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
     marginBottom: 4,
   },
   cardMeta: {
     fontSize: 12,
-    color: '#444',
+    color: THEME.inkSoft,
     marginBottom: 4,
   },
   row: {
@@ -542,45 +646,47 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   primaryBtn: {
-    backgroundColor: '#111',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
+    backgroundColor: THEME.coral,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
     marginBottom: 8,
   },
   primaryBtnText: {
     color: '#fff',
-    fontWeight: '600',
+    fontWeight: '700',
     textAlign: 'center',
   },
   secondaryBtn: {
-    backgroundColor: '#ddd',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    backgroundColor: THEME.bgAlt,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     marginTop: 6,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   btnDisabled: {
     opacity: 0.5,
   },
   secondaryBtnText: {
-    color: '#222',
-    fontWeight: '600',
+    color: THEME.ink,
+    fontWeight: '700',
   },
   ghostBtn: {
     borderWidth: 1,
-    borderColor: '#999',
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    borderColor: THEME.sage,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     marginTop: 6,
   },
   ghostBtnText: {
-    color: '#333',
-    fontWeight: '600',
+    color: THEME.sage,
+    fontWeight: '700',
   },
   errorText: {
-    color: '#c00',
+    color: THEME.coralDark,
     fontSize: 12,
     marginTop: 8,
   },
@@ -590,14 +696,14 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   walletCard: {
-    backgroundColor: '#111',
-    padding: 16,
-    borderRadius: 14,
+    backgroundColor: THEME.ink,
+    padding: 18,
+    borderRadius: 16,
     marginBottom: 12,
   },
   walletBalance: {
     color: '#fff',
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: '700',
     marginBottom: 6,
   },
@@ -607,36 +713,38 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   savingsCard: {
-    backgroundColor: '#f7f7f7',
-    borderRadius: 12,
-    padding: 12,
+    backgroundColor: THEME.bgAlt,
+    borderRadius: 14,
+    padding: 14,
     marginBottom: 12,
+    borderWidth: 1,
+    borderColor: THEME.border,
   },
   savingsLabel: {
-    color: '#555',
+    color: THEME.inkSoft,
     fontSize: 12,
     marginBottom: 4,
   },
   savingsValue: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#111',
+    color: THEME.ink,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    borderColor: THEME.border,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     marginBottom: 10,
-    backgroundColor: '#fff',
+    backgroundColor: THEME.card,
   },
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: '#ddd',
-    backgroundColor: '#fff',
-    paddingVertical: 10,
+    borderTopColor: THEME.border,
+    backgroundColor: THEME.card,
+    paddingVertical: 12,
   },
   tabBtn: {
     flex: 1,
@@ -644,14 +752,34 @@ const styles = StyleSheet.create({
   },
   tabBtnActive: {
     borderBottomWidth: 2,
-    borderBottomColor: '#000',
+    borderBottomColor: THEME.coral,
   },
   tabLabel: {
     fontSize: 12,
-    color: '#666',
+    color: THEME.inkSoft,
   },
   tabLabelActive: {
-    color: '#000',
+    color: THEME.ink,
+  },
+  bgGlowTop: {
+    position: 'absolute',
+    top: -40,
+    left: -40,
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    backgroundColor: '#FDE2D1',
+    opacity: 0.6,
+  },
+  bgGlowBottom: {
+    position: 'absolute',
+    bottom: -60,
+    right: -40,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: '#DCEBE5',
+    opacity: 0.6,
   },
 });
 

@@ -243,3 +243,13 @@ export async function cancelReservation(id: number) {
     }
   );
 }
+
+export async function requestRefund(userId: number, token: string) {
+  return request<{ refund: any }>("/api/me/refunds/request", {
+    method: "POST",
+    headers: {
+      "X-User-Id": String(userId),
+      "X-Activation-Token": token,
+    },
+  });
+}
