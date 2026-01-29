@@ -83,6 +83,7 @@ function App(): JSX.Element {
   const [status, setStatus] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [accessCode, setAccessCode] = useState<string>('');
+  const [partySize, setPartySize] = useState<number>(2);
   const [transactions, setTransactions] = useState<WalletTx[]>([]);
   const [refunds, setRefunds] = useState<WalletRefund[]>([]);
 
@@ -191,6 +192,7 @@ function App(): JSX.Element {
         businessId: offer.merchantId,
         flashOfferId: offer.id,
         depositAmount: DEPOSIT_AMOUNT,
+        partySize,
       });
       const merchantName =
         'merchant' in offer ? offer.merchant?.name ?? null : null;
@@ -276,10 +278,22 @@ function App(): JSX.Element {
         </TouchableOpacity>
         {loading ? <ActivityIndicator /> : null}
         {status ? <Text style={styles.errorText}>{status}</Text> : null}
-        {offers.map((o) => (
-          <TouchableOpacity key={o.id} style={styles.card} onPress={() => openOffer(o.id)}>
-            <Text style={styles.cardTitle}>{o.title}</Text>
-            <Text style={styles.cardMeta}>€ {o.price} • {o.startsAt}</Text>
+        {offers.map((o, idx) => (
+          <TouchableOpacity key={o.id} style={styles.offerCard} onPress={() => openOffer(o.id)}>
+            <View style={styles.offerAccent} />
+            <View style={styles.offerHeader}>
+              <Text style={styles.offerTitle}>{o.title}</Text>
+              <View style={styles.pricePill}>
+                <Text style={styles.pricePillText}>€ {o.price}</Text>
+              </View>
+            </View>
+            <View style={styles.offerMetaRow}>
+              <Text style={styles.offerMetaLabel}>Inizio</Text>
+              <Text style={styles.offerMetaValue}>
+                {new Date(o.startsAt).toLocaleString()}
+              </Text>
+            </View>
+            {idx === 0 ? <Text style={styles.offerBadge}>Offerta in evidenza</Text> : null}
           </TouchableOpacity>
         ))}
         {selectedOffer ? (
@@ -287,6 +301,22 @@ function App(): JSX.Element {
             <Text style={styles.cardTitle}>{selectedOffer.title}</Text>
             <Text style={styles.cardMeta}>{selectedOffer.description || '—'}</Text>
             <Text style={styles.cardMeta}>€ {selectedOffer.price}</Text>
+            <View style={styles.partyRow}>
+              <Text style={styles.cardMeta}>Persone</Text>
+              <View style={styles.partyControls}>
+                <TouchableOpacity
+                  style={styles.partyBtn}
+                  onPress={() => setPartySize((p) => Math.max(1, p - 1))}>
+                  <Text style={styles.partyBtnText}>−</Text>
+                </TouchableOpacity>
+                <Text style={styles.partyValue}>{partySize}</Text>
+                <TouchableOpacity
+                  style={styles.partyBtn}
+                  onPress={() => setPartySize((p) => p + 1)}>
+                  <Text style={styles.partyBtnText}>+</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
             <TouchableOpacity style={styles.primaryBtn} onPress={() => bookOffer(selectedOffer)}>
               <Text style={styles.primaryBtnText}>Prenota + garanzia €{DEPOSIT_AMOUNT}</Text>
             </TouchableOpacity>
@@ -334,6 +364,7 @@ function App(): JSX.Element {
                 {b.merchantName}{b.merchantCity ? ` • ${b.merchantCity}` : ''}
               </Text>
             ) : null}
+            {b.party_size ? <Text style={styles.cardMeta}>Persone: {b.party_size}</Text> : null}
             <Text style={styles.cardMeta}>Stato: {statusLabel(b.deposit_status)}</Text>
             <TouchableOpacity
               style={[styles.secondaryBtn, (b.deposit_status === 'released' || b.deposit_status === 'forfeited') ? styles.btnDisabled : null]}
@@ -685,6 +716,39 @@ const styles = StyleSheet.create({
     color: THEME.sage,
     fontWeight: '700',
   },
+  partyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: 8,
+  },
+  partyControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  partyBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: THEME.bgAlt,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  partyBtnText: {
+    fontSize: 18,
+    color: THEME.ink,
+    fontWeight: '700',
+  },
+  partyValue: {
+    minWidth: 24,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '700',
+    color: THEME.ink,
+  },
   errorText: {
     color: THEME.coralDark,
     fontSize: 12,
@@ -760,6 +824,80 @@ const styles = StyleSheet.create({
   },
   tabLabelActive: {
     color: THEME.ink,
+  },
+  offerCard: {
+    backgroundColor: THEME.card,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    shadowColor: '#000',
+    shadowOpacity: 0.08,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  offerAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 6,
+    backgroundColor: THEME.coral,
+  },
+  offerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 8,
+    paddingLeft: 6,
+  },
+  offerTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: THEME.ink,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+  },
+  pricePill: {
+    backgroundColor: THEME.coral,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+  },
+  pricePillText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  offerMetaRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    paddingLeft: 6,
+  },
+  offerMetaLabel: {
+    fontSize: 11,
+    color: THEME.inkSoft,
+  },
+  offerMetaValue: {
+    fontSize: 12,
+    color: THEME.ink,
+    fontWeight: '600',
+  },
+  offerBadge: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    backgroundColor: THEME.bgAlt,
+    color: THEME.inkSoft,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    fontSize: 11,
   },
   bgGlowTop: {
     position: 'absolute',

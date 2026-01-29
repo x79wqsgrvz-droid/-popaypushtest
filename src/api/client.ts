@@ -176,6 +176,7 @@ export type Reservation = {
   outcome?: string | null;
   reserved_at?: string | null;
   guarantee_amount?: number | null;
+  party_size?: number | null;
 };
 
 export async function createReservation(payload: {
@@ -183,6 +184,7 @@ export async function createReservation(payload: {
   businessId: number;
   flashOfferId?: number | null;
   depositAmount?: number | null;
+  partySize?: number | null;
 }) {
   return request<Reservation>("/api/reservations", {
     method: "POST",
