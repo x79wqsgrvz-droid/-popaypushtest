@@ -139,6 +139,7 @@ export type FlashOfferListItem = {
   title: string;
   description: string | null;
   price: string;
+  mealType?: string | null;
   startsAt: string;
   endsAt: string;
   quantityAvailable: number | null;
@@ -249,6 +250,28 @@ export async function cancelReservation(id: number) {
 export async function requestRefund(userId: number, token: string) {
   return request<{ refund: any }>("/api/me/refunds/request", {
     method: "POST",
+    headers: {
+      "X-User-Id": String(userId),
+      "X-Activation-Token": token,
+    },
+  });
+}
+
+export async function registerPushToken(userId: number, token: string, fcmToken: string) {
+  return request<{ ok: true }>("/api/me/push-tokens", {
+    method: "POST",
+    headers: {
+      "X-User-Id": String(userId),
+      "X-Activation-Token": token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ token: fcmToken, channel: "FCM" }),
+  });
+}
+
+export async function getNotificationCounts(userId: number, token: string) {
+  return request<{ offers: number; bookings: number }>("/api/me/notifications/counts", {
+    method: "GET",
     headers: {
       "X-User-Id": String(userId),
       "X-Activation-Token": token,

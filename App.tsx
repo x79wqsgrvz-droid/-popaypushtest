@@ -17,10 +17,13 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  RefreshControl,
   TextInput,
   Linking,
   Platform,
+  PermissionsAndroid,
 } from 'react-native';
+import messaging from '@react-native-firebase/messaging';
 import {Colors} from 'react-native/Libraries/NewAppScreen';
 import {
   activate,
@@ -35,6 +38,8 @@ import {
   getMyTransactions,
   getMyRefunds,
   requestRefund,
+  registerPushToken,
+  getNotificationCounts,
   type FlashOfferListItem,
   type FlashOfferDetail,
   type Reservation,
@@ -86,6 +91,13 @@ function App(): JSX.Element {
   const [partySize, setPartySize] = useState<number>(2);
   const [transactions, setTransactions] = useState<WalletTx[]>([]);
   const [refunds, setRefunds] = useState<WalletRefund[]>([]);
+  const [notifCounts, setNotifCounts] = useState<{ offers: number; bookings: number }>({ offers: 0, bookings: 0 });
+  const depositForParty = (size: number) => {
+    if (size >= 10) return 20;
+    if (size >= 7) return 15;
+    if (size >= 4) return 10;
+    return 5;
+  };
 
   useEffect(() => {
     // Auto-load iniziale per demo
@@ -94,10 +106,66 @@ function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    loadNotificationCounts();
+  }, []);
+
+  useEffect(() => {
     if (activeTab === 'wallet') {
       loadWallet();
     }
+    if (activeTab === 'offers') {
+      loadOffers();
+    }
+    if (activeTab === 'offers' || activeTab === 'bookings') {
+      loadNotificationCounts();
+    }
   }, [activeTab]);
+
+  useEffect(() => {
+    async function initPush() {
+      try {
+        console.log('[push] init start', { authUserId, token });
+        if (Platform.OS === 'android' && Platform.Version >= 33) {
+          await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS);
+        }
+        await messaging().setAutoInitEnabled(true);
+        await messaging().registerDeviceForRemoteMessages();
+        const isRegistered = await messaging().isDeviceRegisteredForRemoteMessages;
+        console.log('[push] device registered', isRegistered);
+        try {
+          await messaging().requestPermission();
+        } catch (e) {
+          // requestPermission not required on Android, ignore
+        }
+        const authToken = await ensureToken();
+        const fcmToken = await Promise.race([
+          messaging().getToken(),
+          new Promise<string>((_, reject) =>
+            setTimeout(() => reject(new Error('FCM getToken timeout')), 7000)
+          ),
+        ]);
+        console.log('[push] fcmToken', fcmToken);
+        if (fcmToken) {
+          await registerPushToken(authUserId, authToken, fcmToken);
+          console.log('[push] token registered');
+        }
+      } catch (err) {
+        console.log('[push] init error', err);
+      }
+    }
+    initPush();
+    const unsub = messaging().onTokenRefresh(async (fcmToken) => {
+      console.log('[push] token refresh', fcmToken);
+      try {
+        const authToken = await ensureToken();
+        await registerPushToken(authUserId, authToken, fcmToken);
+        console.log('[push] token refresh registered');
+      } catch (e) {
+        console.log('[push] token refresh error', e);
+      }
+    });
+    return () => unsub();
+  }, [authUserId, token]);
 
   async function ensureToken() {
     if (token) return token;
@@ -119,6 +187,16 @@ function App(): JSX.Element {
     const me = await getMyWallet(authUserId, authToken);
     setWallet(me.wallet);
     return me.wallet;
+  }
+
+  async function loadNotificationCounts() {
+    try {
+      const authToken = await ensureToken();
+      const counts = await getNotificationCounts(authUserId, authToken);
+      setNotifCounts(counts);
+    } catch (err) {
+      console.log('[notifications] counts error', err);
+    }
   }
 
   async function refreshBookings() {
@@ -187,11 +265,12 @@ function App(): JSX.Element {
     setStatus('');
     try {
       const w = await ensureWallet();
+      const depositAmount = depositForParty(partySize);
       const created = await createReservation({
         userId: authUserId,
         businessId: offer.merchantId,
         flashOfferId: offer.id,
-        depositAmount: DEPOSIT_AMOUNT,
+        depositAmount,
         partySize,
       });
       const merchantName =
@@ -201,7 +280,7 @@ function App(): JSX.Element {
       await holdDeposit({
         reservationId: created.id,
         walletId: w.id,
-        amount: DEPOSIT_AMOUNT,
+        amount: depositAmount,
         currency: DEPOSIT_CURRENCY,
       });
       Alert.alert(
@@ -270,12 +349,12 @@ function App(): JSX.Element {
 
   function renderOffersTab() {
     return (
-      <ScrollView contentContainerStyle={styles.tabContent}>
+      <ScrollView
+        contentContainerStyle={styles.tabContent}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={loadOffers} />}
+      >
         <Text style={styles.title}>Offerte</Text>
         <Text style={styles.subtitle}>Città: {DEMO_CITY}</Text>
-        <TouchableOpacity style={styles.primaryBtn} onPress={loadOffers}>
-          <Text style={styles.primaryBtnText}>Carica offerte</Text>
-        </TouchableOpacity>
         {loading ? <ActivityIndicator /> : null}
         {status ? <Text style={styles.errorText}>{status}</Text> : null}
         {offers.map((o, idx) => (
@@ -318,7 +397,9 @@ function App(): JSX.Element {
               </View>
             </View>
             <TouchableOpacity style={styles.primaryBtn} onPress={() => bookOffer(selectedOffer)}>
-              <Text style={styles.primaryBtnText}>Prenota + garanzia €{DEPOSIT_AMOUNT}</Text>
+              <Text style={styles.primaryBtnText}>
+                Prenota + garanzia €{depositForParty(partySize)}
+              </Text>
             </TouchableOpacity>
           </View>
         ) : null}
@@ -384,6 +465,12 @@ function App(): JSX.Element {
   }
 
   function renderWalletTab() {
+    const formatDayLabel = (iso: string) => {
+      const d = new Date(iso);
+      const weekday = d.toLocaleDateString('it-IT', { weekday: 'short' });
+      const date = d.toLocaleDateString('it-IT');
+      return `${weekday.charAt(0).toUpperCase()}${weekday.slice(1)} ${date}`;
+    };
     const totalSavings = transactions.reduce((sum, t) => sum + (t.savings ?? 0), 0);
     const labelForTx = (t: WalletTx) => {
       switch (t.description) {
@@ -401,55 +488,82 @@ function App(): JSX.Element {
           return t.description || 'Transazione';
       }
     };
+    const grouped = (() => {
+      const map = new Map<string, { label: string; items: WalletTx[] }>();
+      const sorted = [...transactions].sort(
+        (a, b) => new Date(b.when).getTime() - new Date(a.when).getTime()
+      );
+      for (const t of sorted) {
+        const key = new Date(t.when).toLocaleDateString('it-IT');
+        if (!map.has(key)) {
+          map.set(key, { label: formatDayLabel(t.when), items: [] });
+        }
+        map.get(key)!.items.push(t);
+      }
+      return Array.from(map.values());
+    })();
     return (
-      <ScrollView contentContainerStyle={styles.tabContent}>
-        <Text style={styles.title}>Wallet</Text>
-        <TouchableOpacity style={styles.primaryBtn} onPress={loadWallet}>
-          <Text style={styles.primaryBtnText}>Carica wallet</Text>
-        </TouchableOpacity>
-        {wallet ? (
-          <View style={styles.walletCard}>
-            <Text style={styles.walletBalance}>€ {Number(wallet.remaining_credit).toFixed(2)}</Text>
-            <Text style={styles.walletMeta}>Taglio: € {Number(wallet.initial_credit).toFixed(2)}</Text>
-            <Text style={styles.walletMeta}>Stato: {wallet.status}</Text>
-            <Text style={styles.walletMeta}>
-              Scadenza: {wallet.expires_at ? new Date(wallet.expires_at).toLocaleDateString() : '—'}
-            </Text>
-          </View>
-        ) : (
-          <Text style={styles.subtitle}>Nessun wallet caricato.</Text>
-        )}
-        <View style={styles.savingsCard}>
-          <Text style={styles.savingsLabel}>Risparmio totale</Text>
-          <Text style={styles.savingsValue}>€ {totalSavings.toFixed(2)}</Text>
-        </View>
-        <Text style={styles.subtitle}>Transazioni</Text>
-        {transactions.length === 0 ? (
-          <Text style={styles.subtitle}>Nessuna transazione.</Text>
-        ) : (
-          transactions.map((t) => (
-            <View key={t.id} style={styles.card}>
-              <Text style={styles.cardTitle}>{labelForTx(t)}</Text>
-              <Text style={styles.cardMeta}>{t.merchant?.name || 'Esercente'}</Text>
-              <Text style={styles.cardMeta}>{new Date(t.when).toLocaleString()}</Text>
-              <Text style={styles.cardMeta}>Importo: € {t.net_amount ?? t.net_spent}</Text>
-              {t.savings != null ? (
-                <Text style={styles.cardMeta}>Risparmio: € {t.savings.toFixed(2)}</Text>
-              ) : null}
+      <View style={{flex: 1}}>
+        <ScrollView contentContainerStyle={styles.tabContent}>
+          <Text style={styles.title}>Wallet</Text>
+          {wallet ? (
+            <View style={styles.walletCard}>
+              <Text style={styles.walletBalance}>€ {Number(wallet.remaining_credit).toFixed(2)}</Text>
+              <Text style={styles.walletMeta}>Taglio: € {Number(wallet.initial_credit).toFixed(2)}</Text>
+              <Text style={styles.walletMeta}>Stato: {wallet.status}</Text>
+              <Text style={styles.walletMeta}>
+                Scadenza: {wallet.expires_at ? new Date(wallet.expires_at).toLocaleDateString() : '—'}
+              </Text>
             </View>
-          ))
-        )}
-        {status ? <Text style={styles.errorText}>{status}</Text> : null}
-      </ScrollView>
+          ) : (
+            <Text style={styles.subtitle}>Nessun wallet caricato.</Text>
+          )}
+          <View style={styles.savingsCard}>
+            <Text style={styles.savingsLabel}>Risparmio totale</Text>
+            <Text style={styles.savingsValue}>€ {totalSavings.toFixed(2)}</Text>
+          </View>
+          <Text style={styles.subtitle}>Transazioni</Text>
+          {grouped.length === 0 ? (
+            <Text style={styles.subtitle}>Nessuna transazione.</Text>
+          ) : (
+            grouped.map((group) => (
+              <View key={group.label} style={styles.dayCard}>
+                <Text style={styles.dayHeader}>{group.label}</Text>
+                {group.items.map((t) => (
+                  <View key={t.id} style={styles.txRowWrap}>
+                    <View style={styles.txRow}>
+                      <Text style={styles.txLabel}>{labelForTx(t)}</Text>
+                      <Text style={styles.txAmount}>€ {t.net_amount ?? t.net_spent}</Text>
+                    </View>
+                    {t.merchant?.name ? (
+                      <Text style={styles.txMerchant}>{t.merchant.name}</Text>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            ))
+          )}
+          {status ? <Text style={styles.errorText}>{status}</Text> : null}
+        </ScrollView>
+        <View style={styles.payBar}>
+          <TouchableOpacity style={styles.payBtn} onPress={() => Alert.alert('Paga', 'Scansione QR in arrivo')}>
+            <Text style={styles.payBtnText}>Paga conto • Inquadra QR</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     );
   }
 
   function renderProfileTab() {
+    const totalSavings = transactions.reduce((sum, t) => sum + (t.savings ?? 0), 0);
     const taglioDate = wallet?.activated_at || wallet?.created_at;
     const hostAddress = [wallet?.hosts?.address, wallet?.hosts?.city, wallet?.hosts?.country]
       .filter(Boolean)
       .join(', ');
     const checkoutDate = wallet?.users?.checkout_date ? new Date(wallet.users.checkout_date) : null;
+    const isCheckoutToday = checkoutDate
+      ? new Date().toDateString() === checkoutDate.toDateString()
+      : false;
     const refundAvailableFrom = checkoutDate
       ? new Date(checkoutDate.getFullYear(), checkoutDate.getMonth(), checkoutDate.getDate() + 1)
       : null;
@@ -475,6 +589,13 @@ function App(): JSX.Element {
         <Text style={styles.title}>Profilo</Text>
         <Text style={styles.subtitle}>userId={authUserId} • hostId={authHostId}</Text>
         <Text style={styles.subtitle}>Token: {token ? `${token.slice(0, 8)}…` : 'non attivo'}</Text>
+        <View style={[styles.savingsCard, isCheckoutToday ? styles.savingsHighlight : null]}>
+          <Text style={styles.savingsLabel}>Risparmio totale ad oggi</Text>
+          <Text style={styles.savingsValue}>€ {totalSavings.toFixed(2)}</Text>
+          {checkoutDate ? (
+            <Text style={styles.cardMeta}>Aggiornato al {new Date().toLocaleDateString()}</Text>
+          ) : null}
+        </View>
         <Text style={styles.subtitle}>Tagli acquistati</Text>
         {wallet ? (
           <View style={styles.card}>
@@ -564,6 +685,7 @@ function App(): JSX.Element {
               Alert.alert('Attivazione riuscita', `Token: ${res.token.slice(0, 8)}…`);
               await loadOffers();
               await loadWallet();
+              await loadNotificationCounts();
             } catch (err) {
               console.log('Errore activateByCode', err);
               const msg =
@@ -599,8 +721,8 @@ function App(): JSX.Element {
         {activeTab === 'wallet' && renderWalletTab()}
         {activeTab === 'profile' && renderProfileTab()}
         <View style={styles.tabBar}>
-          <TabButton label="Offerte" active={activeTab === 'offers'} onPress={() => setActiveTab('offers')} />
-          <TabButton label="Prenotazioni" active={activeTab === 'bookings'} onPress={() => setActiveTab('bookings')} />
+          <TabButton label="Offerte" badge={notifCounts.offers} active={activeTab === 'offers'} onPress={() => setActiveTab('offers')} />
+          <TabButton label="Prenotazioni" badge={notifCounts.bookings} active={activeTab === 'bookings'} onPress={() => setActiveTab('bookings')} />
           <TabButton label="Wallet" active={activeTab === 'wallet'} onPress={() => setActiveTab('wallet')} />
           <TabButton label="Profilo" active={activeTab === 'profile'} onPress={() => setActiveTab('profile')} />
         </View>
@@ -610,10 +732,15 @@ function App(): JSX.Element {
   );
 }
 
-function TabButton({label, active, onPress}: {label: string; active: boolean; onPress: () => void}) {
+function TabButton({label, active, onPress, badge}: {label: string; active: boolean; onPress: () => void; badge?: number}) {
   return (
     <TouchableOpacity style={[styles.tabBtn, active ? styles.tabBtnActive : null]} onPress={onPress}>
-      <Text style={[styles.tabLabel, active ? styles.tabLabelActive : null]}>{label}</Text>
+      <View style={styles.tabBtnInner}>
+        <Text style={[styles.tabLabel, active ? styles.tabLabelActive : null]}>{label}</Text>
+        {badge && badge > 0 ? (
+          <View style={styles.badge}><Text style={styles.badgeText}>{badge}</Text></View>
+        ) : null}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -687,6 +814,27 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     textAlign: 'center',
+  },
+  payBtn: {
+    backgroundColor: THEME.ink,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    marginBottom: 10,
+  },
+  payBtnText: {
+    color: '#fff',
+    fontWeight: '800',
+    textAlign: 'center',
+    fontSize: 16,
+  },
+  payBar: {
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 10,
+    backgroundColor: THEME.card,
+    borderTopWidth: 1,
+    borderTopColor: THEME.border,
   },
   secondaryBtn: {
     backgroundColor: THEME.bgAlt,
@@ -794,6 +942,46 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: THEME.ink,
   },
+  dayCard: {
+    backgroundColor: THEME.card,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  dayHeader: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: THEME.ink,
+    marginBottom: 8,
+  },
+  txRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  txRowWrap: {
+    marginBottom: 6,
+  },
+  txLabel: {
+    fontSize: 12,
+    color: THEME.inkSoft,
+  },
+  txAmount: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: THEME.ink,
+  },
+  txMerchant: {
+    fontSize: 11,
+    color: THEME.inkSoft,
+  },
+  savingsHighlight: {
+    borderColor: THEME.coral,
+    borderWidth: 1,
+    backgroundColor: '#FFF2E9',
+  },
   input: {
     borderWidth: 1,
     borderColor: THEME.border,
@@ -814,6 +1002,9 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
+  tabBtnInner: {
+    alignItems: 'center',
+  },
   tabBtnActive: {
     borderBottomWidth: 2,
     borderBottomColor: THEME.coral,
@@ -824,6 +1015,20 @@ const styles = StyleSheet.create({
   },
   tabLabelActive: {
     color: THEME.ink,
+  },
+  badge: {
+    marginTop: 4,
+    backgroundColor: THEME.coral,
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    minWidth: 18,
+    alignItems: 'center',
+  },
+  badgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
   },
   offerCard: {
     backgroundColor: THEME.card,
