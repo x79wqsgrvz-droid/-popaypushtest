@@ -5,7 +5,7 @@
  * @format
  */
 
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useMemo, useState} from 'react';
 import {
   SafeAreaView,
   StatusBar,
@@ -13,6 +13,7 @@ import {
   Text,
   useColorScheme,
   View,
+  Modal,
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
@@ -25,6 +26,9 @@ import {
 } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
 import {Colors} from 'react-native/Libraries/NewAppScreen';
+import QRCode from 'react-native-qrcode-svg';
+import {Camera, useCameraDevice, useCodeScanner} from 'react-native-vision-camera';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   activate,
   activateByCode,
@@ -38,6 +42,12 @@ import {
   getMyTransactions,
   getMyRefunds,
   requestRefund,
+  payPrepare,
+  payConfirm,
+  createFlashOffer,
+  getMerchantReservations,
+  payPrepareReservation,
+  confirmReservationArrival,
   registerPushToken,
   getNotificationCounts,
   type FlashOfferListItem,
@@ -64,6 +74,15 @@ const THEME = {
   sage: '#7FA89B',
   border: '#E8DED2',
 };
+type Role = 'client' | 'merchant' | 'host' | null;
+type MerchantPlan = 'BASIC' | 'RECOMMENDED' | 'OFFERS';
+const MERCHANT_DISCOUNT_PCT = 10;
+const MERCHANT_FEE_BY_PLAN: Record<MerchantPlan, number> = {
+  BASIC: 2,
+  RECOMMENDED: 3,
+  OFFERS: 4,
+};
+type MerchantTab = 'payments' | 'offers' | 'reservations';
 type TabKey = 'offers' | 'bookings' | 'wallet' | 'profile';
 type BookingView = Reservation & {
   offerTitle?: string | null;
@@ -77,6 +96,43 @@ function App(): JSX.Element {
   const backgroundStyle = {
     backgroundColor: THEME.bg,
   };
+  const [role, setRole] = useState<Role>(null);
+  const [merchantIdInput, setMerchantIdInput] = useState('2');
+  const [merchantUserIdInput, setMerchantUserIdInput] = useState('1');
+  const [merchantGrossInput, setMerchantGrossInput] = useState('0');
+  const [merchantPlan, setMerchantPlan] = useState<MerchantPlan>('BASIC');
+  const [merchantLoading, setMerchantLoading] = useState(false);
+  const [merchantPrepare, setMerchantPrepare] = useState<any | null>(null);
+  const [merchantQrVisible, setMerchantQrVisible] = useState(false);
+  const [merchantTab, setMerchantTab] = useState<MerchantTab>('payments');
+  const [merchantReservations, setMerchantReservations] = useState<any[]>([]);
+  const [merchantReservationsLoading, setMerchantReservationsLoading] = useState(false);
+  const [confirmModalVisible, setConfirmModalVisible] = useState(false);
+  const [selectedReservation, setSelectedReservation] = useState<any | null>(null);
+  const [flashOn, setFlashOn] = useState(false);
+  const [offerTitle, setOfferTitle] = useState('');
+  const [offerDescription, setOfferDescription] = useState('');
+  const [offerPriceInput, setOfferPriceInput] = useState('');
+  const [offerStandardPriceInput, setOfferStandardPriceInput] = useState('');
+  const [offerMealType, setOfferMealType] = useState('Cena');
+  const [offerCity, setOfferCity] = useState(DEMO_CITY);
+  const now = roundTo5(new Date());
+  const [offerStartDate, setOfferStartDate] = useState(now.toISOString().slice(0,10));
+  const [offerStartTime, setOfferStartTime] = useState(now.toTimeString().slice(0,5));
+  const [offerEndDate, setOfferEndDate] = useState(now.toISOString().slice(0,10));
+  const [offerEndTime, setOfferEndTime] = useState(new Date(now.getTime() + 2 * 60 * 60 * 1000).toTimeString().slice(0,5));
+  const [showStartDatePicker, setShowStartDatePicker] = useState(false);
+  const [showStartTimePicker, setShowStartTimePicker] = useState(false);
+  const [showEndDatePicker, setShowEndDatePicker] = useState(false);
+  const [showEndTimePicker, setShowEndTimePicker] = useState(false);
+  const [offerQtyInput, setOfferQtyInput] = useState('20');
+  const [offerLoading, setOfferLoading] = useState(false);
+  const [offerResult, setOfferResult] = useState<any | null>(null);
+  const [offerErrors, setOfferErrors] = useState<{ title?: string; price?: string; standardPrice?: string; qty?: string; time?: string; merchantId?: string }>({});
+  const errorInput = (key: 'title' | 'price' | 'standardPrice' | 'qty' | 'time' | 'merchantId') =>
+    offerErrors[key] ? styles.inputError : null;
+  const [scanVisible, setScanVisible] = useState(false);
+  const [scanBusy, setScanBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>('offers');;
   const [token, setToken] = useState<string | null>(null);
   const [authUserId, setAuthUserId] = useState<number>(DEMO_USER_ID);
@@ -92,6 +148,7 @@ function App(): JSX.Element {
   const [transactions, setTransactions] = useState<WalletTx[]>([]);
   const [refunds, setRefunds] = useState<WalletRefund[]>([]);
   const [notifCounts, setNotifCounts] = useState<{ offers: number; bookings: number }>({ offers: 0, bookings: 0 });
+  const [lastPaidShownId, setLastPaidShownId] = useState<number | null>(null);
   const depositForParty = (size: number) => {
     if (size >= 10) return 20;
     if (size >= 7) return 15;
@@ -99,17 +156,120 @@ function App(): JSX.Element {
     return 5;
   };
 
+  const merchantSummary = useMemo(() => {
+    const gross = Number(merchantGrossInput.replace(',', '.'));
+    if (!Number.isFinite(gross) || gross <= 0) {
+      return { gross: 0, discount: 0, net: 0, feePct: MERCHANT_FEE_BY_PLAN[merchantPlan], fee: 0, merchantNet: 0 };
+    }
+    const discount = (gross * MERCHANT_DISCOUNT_PCT) / 100;
+    const net = gross - discount;
+    const feePct = MERCHANT_FEE_BY_PLAN[merchantPlan];
+    const fee = (net * feePct) / 100;
+    const merchantNet = net - fee;
+    return { gross, discount, net, feePct, fee, merchantNet };
+  }, [merchantGrossInput, merchantPlan]);
+
+  async function loadMerchantReservations() {
+    const merchantId = Number(merchantIdInput);
+    if (!Number.isFinite(merchantId)) return;
+    setMerchantReservationsLoading(true);
+    try {
+      const res = await getMerchantReservations(merchantId);
+      setMerchantReservations(res.items);
+    } catch (e) {
+      console.warn('[merchant] reservations error', e);
+    } finally {
+      setMerchantReservationsLoading(false);
+    }
+  }
+
+  const device = useCameraDevice('back');
+  const codeScanner = useCodeScanner({
+    codeTypes: ['qr'],
+    onCodeScanned: async (codes) => {
+      if (scanBusy) return;
+      const code = codes[0]?.value;
+      if (!code) return;
+      setScanBusy(true);
+      try {
+        const data = JSON.parse(code);
+        const transactionId = Number(data.transactionId);
+        if (!Number.isFinite(transactionId)) throw new Error('QR non valido');
+        const authToken = await ensureToken();
+        const w = await ensureWallet();
+        const res = await payConfirm({ userId: authUserId, token: authToken, transactionId, walletId: w.id });
+        Alert.alert('Pagamento effettuato', `Pagato: € ${fmtMoney(res.transaction.net_amount)}`);
+        await loadWallet();
+        setScanVisible(false);
+      } catch (e: any) {
+        Alert.alert('Errore', e?.message || 'QR non valido');
+      } finally {
+        setScanBusy(false);
+      }
+    },
+  });
+
+  async function openScanner() {
+    const current = await Camera.getCameraPermissionStatus();
+    console.log('[scanner] permission', current);
+    if (current === 'authorized' || current === 'granted') {
+      setScanVisible(true);
+      return;
+    }
+    const status = await Camera.requestCameraPermission();
+    console.log('[scanner] permission after request', status);
+    if (status !== 'authorized' && status !== 'granted') {
+      Alert.alert(
+        'Permesso',
+        'Serve accesso alla fotocamera',
+        [
+          { text: 'Annulla', style: 'cancel' },
+          { text: 'Apri impostazioni', onPress: () => Linking.openSettings() },
+        ]
+      );
+      return;
+    }
+    setScanVisible(true);
+  }
+
+  async function openOfferById(offerId: number) {
+    setLoading(true);
+    try {
+      const detail = await getFlashOfferDetail(offerId);
+      setSelectedOffer(detail);
+      setActiveTab('offers');
+    } catch (e: any) {
+      Alert.alert('Errore', e?.body?.error || e?.message || 'Errore apertura offerta');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
+    if (role !== 'client') return;
     // Auto-load iniziale per demo
     loadOffers();
     loadWallet();
-  }, []);
+  }, [role]);
 
   useEffect(() => {
+    if (role !== 'merchant') return;
+    if (merchantTab === 'reservations') loadMerchantReservations();
+  }, [role, merchantTab]);
+
+  useEffect(() => {
+    if (role !== 'merchant' || merchantTab !== 'reservations') return;
+    const t = setInterval(() => setFlashOn((v) => !v), 600);
+    return () => clearInterval(t);
+  }, [role, merchantTab]);
+
+  useEffect(() => {
+    if (role !== 'client') return;
     loadNotificationCounts();
-  }, []);
+  }, [role]);
 
   useEffect(() => {
+    if (role !== 'client') return;
     if (activeTab === 'wallet') {
       loadWallet();
     }
@@ -119,9 +279,10 @@ function App(): JSX.Element {
     if (activeTab === 'offers' || activeTab === 'bookings') {
       loadNotificationCounts();
     }
-  }, [activeTab]);
+  }, [activeTab, role]);
 
   useEffect(() => {
+    if (role !== 'client') return;
     async function initPush() {
       try {
         console.log('[push] init start', { authUserId, token });
@@ -165,7 +326,7 @@ function App(): JSX.Element {
       }
     });
     return () => unsub();
-  }, [authUserId, token]);
+  }, [authUserId, token, role]);
 
   async function ensureToken() {
     if (token) return token;
@@ -363,9 +524,16 @@ function App(): JSX.Element {
             <View style={styles.offerHeader}>
               <Text style={styles.offerTitle}>{o.title}</Text>
               <View style={styles.pricePill}>
-                <Text style={styles.pricePillText}>€ {o.price}</Text>
+                <Text style={styles.pricePillText}>€ {fmtMoney(o.price)}</Text>
               </View>
             </View>
+            {o.standardPrice ? (
+              <View style={styles.savingsPill}>
+                <Text style={styles.savingsPillText}>
+                  Risparmi € {fmtMoney(Number(o.standardPrice) - Number(o.price))}
+                </Text>
+              </View>
+            ) : null}
             <View style={styles.offerMetaRow}>
               <Text style={styles.offerMetaLabel}>Inizio</Text>
               <Text style={styles.offerMetaValue}>
@@ -379,7 +547,12 @@ function App(): JSX.Element {
           <View style={styles.detailCard}>
             <Text style={styles.cardTitle}>{selectedOffer.title}</Text>
             <Text style={styles.cardMeta}>{selectedOffer.description || '—'}</Text>
-            <Text style={styles.cardMeta}>€ {selectedOffer.price}</Text>
+            <Text style={styles.cardMeta}>€ {fmtMoney(selectedOffer.price)}</Text>
+            {selectedOffer.standardPrice ? (
+              <Text style={styles.cardMeta}>
+                Prezzo standard € {fmtMoney(selectedOffer.standardPrice)}
+              </Text>
+            ) : null}
             <View style={styles.partyRow}>
               <Text style={styles.cardMeta}>Persone</Text>
               <View style={styles.partyControls}>
@@ -398,7 +571,7 @@ function App(): JSX.Element {
             </View>
             <TouchableOpacity style={styles.primaryBtn} onPress={() => bookOffer(selectedOffer)}>
               <Text style={styles.primaryBtnText}>
-                Prenota + garanzia €{depositForParty(partySize)}
+                Prenota + garanzia €{fmtMoney(depositForParty(partySize))}
               </Text>
             </TouchableOpacity>
           </View>
@@ -471,17 +644,27 @@ function App(): JSX.Element {
       const date = d.toLocaleDateString('it-IT');
       return `${weekday.charAt(0).toUpperCase()}${weekday.slice(1)} ${date}`;
     };
-    const totalSavings = transactions.reduce((sum, t) => sum + (t.savings ?? 0), 0);
+    const totalSavings = transactions.reduce((sum, t) => {
+      if (t.is_reservation && t.offer?.standardPrice && t.offer?.price && t.gross_amount != null) {
+        const unitStd = Number(t.offer.standardPrice);
+        const unitOffer = Number(t.offer.price);
+        if (Number.isFinite(unitStd) && Number.isFinite(unitOffer) && unitStd > unitOffer && unitOffer > 0) {
+          const partySize = t.gross_amount / unitOffer;
+          return sum + Math.max(0, (unitStd - unitOffer) * partySize);
+        }
+      }
+      return sum + (t.savings ?? 0);
+    }, 0);
     const labelForTx = (t: WalletTx) => {
       switch (t.description) {
         case 'deposit_hold':
-          return 'Deposito prenotazione';
+          return 'Cauzione prenotazione';
         case 'deposit_release':
           return 'Deposito riaccreditato';
         case 'deposit_forfeit':
-          return 'Forfeit deposito';
+          return 'Cauzione utilizzata';
         case 'paid':
-          return 'Pagamento';
+          return t.is_reservation ? 'Saldo evento' : 'Pagamento';
         case 'prepared':
           return 'Pagamento in attesa';
         default:
@@ -490,7 +673,8 @@ function App(): JSX.Element {
     };
     const grouped = (() => {
       const map = new Map<string, { label: string; items: WalletTx[] }>();
-      const sorted = [...transactions].sort(
+      const visible = transactions.filter((t) => t.description !== 'prepared');
+      const sorted = [...visible].sort(
         (a, b) => new Date(b.when).getTime() - new Date(a.when).getTime()
       );
       for (const t of sorted) {
@@ -508,8 +692,8 @@ function App(): JSX.Element {
           <Text style={styles.title}>Wallet</Text>
           {wallet ? (
             <View style={styles.walletCard}>
-              <Text style={styles.walletBalance}>€ {Number(wallet.remaining_credit).toFixed(2)}</Text>
-              <Text style={styles.walletMeta}>Taglio: € {Number(wallet.initial_credit).toFixed(2)}</Text>
+              <Text style={styles.walletBalance}>€ {fmtMoney(wallet.remaining_credit)}</Text>
+              <Text style={styles.walletMeta}>Taglio: € {fmtMoney(wallet.initial_credit)}</Text>
               <Text style={styles.walletMeta}>Stato: {wallet.status}</Text>
               <Text style={styles.walletMeta}>
                 Scadenza: {wallet.expires_at ? new Date(wallet.expires_at).toLocaleDateString() : '—'}
@@ -520,33 +704,75 @@ function App(): JSX.Element {
           )}
           <View style={styles.savingsCard}>
             <Text style={styles.savingsLabel}>Risparmio totale</Text>
-            <Text style={styles.savingsValue}>€ {totalSavings.toFixed(2)}</Text>
+            <Text style={styles.savingsValue}>€ {fmtMoney(totalSavings)}</Text>
           </View>
           <Text style={styles.subtitle}>Transazioni</Text>
           {grouped.length === 0 ? (
             <Text style={styles.subtitle}>Nessuna transazione.</Text>
           ) : (
-            grouped.map((group) => (
-              <View key={group.label} style={styles.dayCard}>
-                <Text style={styles.dayHeader}>{group.label}</Text>
-                {group.items.map((t) => (
-                  <View key={t.id} style={styles.txRowWrap}>
-                    <View style={styles.txRow}>
-                      <Text style={styles.txLabel}>{labelForTx(t)}</Text>
-                      <Text style={styles.txAmount}>€ {t.net_amount ?? t.net_spent}</Text>
-                    </View>
-                    {t.merchant?.name ? (
-                      <Text style={styles.txMerchant}>{t.merchant.name}</Text>
-                    ) : null}
+          grouped.map((group) => (
+            <View key={group.label} style={styles.dayCard}>
+              <Text style={styles.dayHeader}>{group.label}</Text>
+              {group.items.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  style={[
+                    styles.txRowWrap,
+                    t.description === 'paid' && t.is_reservation ? styles.txRowHighlight : null,
+                  ]}
+                  onPress={() => {
+                    if (t.offer?.id) {
+                      openOfferById(t.offer.id);
+                      return;
+                    }
+                    const gross = t.gross_amount;
+                    const net = t.net_amount ?? Number(t.net_spent);
+                    const savings = t.is_reservation ? 0 : (t.savings ?? (gross != null && net != null ? gross - net : null));
+                    if (gross != null && net != null) {
+                      const depositApplied = t.is_reservation ? Math.max(0, gross - net) : 0;
+                      Alert.alert(
+                        'Dettaglio pagamento',
+                        t.is_reservation
+                          ? `Prezzo evento: € ${fmtMoney(gross)}\nCauzione: € ${fmtMoney(depositApplied)}\nSaldo pagato: € ${fmtMoney(net)}`
+                          : `Prezzo di listino: € ${fmtMoney(gross)}\nSconto PoPay: € ${fmtMoney(savings)}\nPagato: € ${fmtMoney(net)}`
+                      );
+                    }
+                  }}>
+                  <View style={styles.txRow}>
+                    <Text style={[styles.txLabel, t.description === 'paid' && t.is_reservation ? styles.txLabelBold : null]}>
+                      {labelForTx(t)}
+                    </Text>
+                    <Text style={styles.txAmount}>€ {fmtMoney(t.net_amount ?? t.net_spent)}</Text>
                   </View>
-                ))}
-              </View>
-            ))
-          )}
+                  {t.merchant?.name ? (
+                    <Text style={styles.txMerchant}>{t.merchant.name}</Text>
+                  ) : null}
+                  {t.is_reservation && t.offer ? (
+                    <Text style={styles.txMeta}>
+                      Evento: {t.offer.title} • Prezzo € {fmtMoney(t.offer.price)} • Cauzione € {fmtMoney(
+                        t.gross_amount != null && t.net_amount != null
+                          ? t.gross_amount - t.net_amount
+                          : Number(t.net_spent)
+                      )}
+                      {t.offer.standardPrice ? ` • Risparmio € ${fmtMoney((Number(t.offer.standardPrice) - Number(t.offer.price)) * (t.gross_amount && Number(t.offer.price) ? t.gross_amount / Number(t.offer.price) : 1))}` : ''}
+                    </Text>
+                  ) : null}
+                  {t.gross_amount != null && t.net_amount != null && !t.is_reservation ? (
+                    <Text style={styles.txMeta}>
+                      Listino € {fmtMoney(t.gross_amount)} • Sconto € {fmtMoney(t.savings ?? (t.gross_amount - t.net_amount))}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+              ))}
+            </View>
+          ))
+        )}
           {status ? <Text style={styles.errorText}>{status}</Text> : null}
         </ScrollView>
         <View style={styles.payBar}>
-          <TouchableOpacity style={styles.payBtn} onPress={() => Alert.alert('Paga', 'Scansione QR in arrivo')}>
+          <TouchableOpacity
+            style={styles.payBtn}
+            onPress={openScanner}>
             <Text style={styles.payBtnText}>Paga conto • Inquadra QR</Text>
           </TouchableOpacity>
         </View>
@@ -591,7 +817,7 @@ function App(): JSX.Element {
         <Text style={styles.subtitle}>Token: {token ? `${token.slice(0, 8)}…` : 'non attivo'}</Text>
         <View style={[styles.savingsCard, isCheckoutToday ? styles.savingsHighlight : null]}>
           <Text style={styles.savingsLabel}>Risparmio totale ad oggi</Text>
-          <Text style={styles.savingsValue}>€ {totalSavings.toFixed(2)}</Text>
+          <Text style={styles.savingsValue}>€ {fmtMoney(totalSavings)}</Text>
           {checkoutDate ? (
             <Text style={styles.cardMeta}>Aggiornato al {new Date().toLocaleDateString()}</Text>
           ) : null}
@@ -599,7 +825,7 @@ function App(): JSX.Element {
         <Text style={styles.subtitle}>Tagli acquistati</Text>
         {wallet ? (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>€ {Number(wallet.initial_credit).toFixed(2)}</Text>
+            <Text style={styles.cardTitle}>€ {fmtMoney(wallet.initial_credit)}</Text>
             <Text style={styles.cardMeta}>
               Host: {wallet.hosts?.name || '—'}
             </Text>
@@ -622,7 +848,7 @@ function App(): JSX.Element {
             <View key={r.id} style={styles.card}>
               <Text style={styles.cardTitle}>Rimborso #{r.id}</Text>
               <Text style={styles.cardMeta}>Tipo: {r.type} • Stato: {r.status}</Text>
-              <Text style={styles.cardMeta}>Importo: € {Number(r.amount).toFixed(2)}</Text>
+              <Text style={styles.cardMeta}>Importo: € {fmtMoney(r.amount)}</Text>
               <Text style={styles.cardMeta}>
                 Data: {r.created_at ? new Date(r.created_at).toLocaleString() : '—'}
               </Text>
@@ -705,31 +931,564 @@ function App(): JSX.Element {
     );
   }
 
+  function renderRolePicker() {
+    return (
+      <SafeAreaView style={[backgroundStyle,{flex:1}]}>
+        <View style={styles.screen}>
+          <Text style={styles.title}>Seleziona ruolo</Text>
+          <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('client')}>
+            <Text style={styles.primaryBtnText}>Cliente</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('merchant')}>
+            <Text style={styles.primaryBtnText}>Esercente</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('host')}>
+            <Text style={styles.primaryBtnText}>Host</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  function renderMerchant() {
+    const qrPayload = merchantPrepare
+      ? JSON.stringify({
+          transactionId: merchantPrepare.transactionId,
+          userId: merchantPrepare.userId,
+          merchantId: merchantPrepare.merchantId,
+          net: merchantPrepare.net,
+          reservationId: merchantPrepare.reservationId ?? null,
+          partySize: merchantPrepare.partySize ?? null,
+          unitPrice: merchantPrepare.unitPrice ?? null,
+          standardPrice: merchantPrepare.standardPrice ?? null,
+        })
+      : null;
+    return (
+      <SafeAreaView style={[backgroundStyle,{flex:1}]}>
+        <ScrollView contentContainerStyle={styles.tabContent}>
+          <Text style={styles.title}>PoPay Merchant</Text>
+          <View style={styles.merchantTabBar}>
+            <TouchableOpacity
+              style={[styles.merchantTab, merchantTab === 'payments' && styles.merchantTabActive]}
+              onPress={() => setMerchantTab('payments')}>
+              <Text style={[styles.merchantTabText, merchantTab === 'payments' && styles.merchantTabTextActive]}>Incassi & QR</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.merchantTab, merchantTab === 'offers' && styles.merchantTabActive]}
+              onPress={() => setMerchantTab('offers')}>
+              <Text style={[styles.merchantTabText, merchantTab === 'offers' && styles.merchantTabTextActive]}>Lancia Offerta</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.merchantTab, merchantTab === 'reservations' && styles.merchantTabActive]}
+              onPress={() => setMerchantTab('reservations')}>
+              <Text style={[styles.merchantTabText, merchantTab === 'reservations' && styles.merchantTabTextActive]}>Prenotazioni</Text>
+            </TouchableOpacity>
+          </View>
+          {merchantTab === 'payments' ? (
+            <>
+          <Text style={styles.subtitle}>Inserisci importo lordo (prezzo di listino)</Text>
+
+          <View style={styles.card}>
+            <Text style={styles.cardMeta}>Merchant ID</Text>
+            <TextInput style={styles.input} value={merchantIdInput} onChangeText={setMerchantIdInput} keyboardType="number-pad" />
+            <Text style={styles.cardMeta}>User ID cliente</Text>
+            <TextInput style={styles.input} value={merchantUserIdInput} onChangeText={setMerchantUserIdInput} keyboardType="number-pad" />
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardMeta}>Importo lordo</Text>
+            <TextInput
+              style={styles.input}
+              value={merchantGrossInput}
+              onChangeText={setMerchantGrossInput}
+              keyboardType="decimal-pad"
+              placeholder="0.00"
+            />
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardMeta}>Piano esercente</Text>
+            <View style={styles.row}>
+              {(['BASIC','RECOMMENDED','OFFERS'] as MerchantPlan[]).map((p) => (
+                <TouchableOpacity
+                  key={p}
+                  style={[styles.secondaryBtn, merchantPlan === p ? styles.planActive : null]}
+                  onPress={() => setMerchantPlan(p)}>
+                  <Text style={styles.secondaryBtnText}>{p}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardMeta}>Listino: € {fmtMoney(merchantSummary.gross)}</Text>
+            <Text style={styles.cardMeta}>Sconto PoPay ({MERCHANT_DISCOUNT_PCT}%): € {fmtMoney(merchantSummary.discount)}</Text>
+            <Text style={styles.cardMeta}>Netto cliente: € {fmtMoney(merchantSummary.net)}</Text>
+            <Text style={styles.cardMeta}>Commissione ({merchantSummary.feePct}%): € {fmtMoney(merchantSummary.fee)}</Text>
+            <Text style={styles.cardTitle}>Incasso merchant: € {fmtMoney(merchantSummary.merchantNet)}</Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.primaryBtn}
+            onPress={async () => {
+              const merchantId = Number(merchantIdInput);
+              const userId = Number(merchantUserIdInput);
+              const gross = Number(merchantGrossInput.replace(',', '.'));
+              if (!Number.isFinite(merchantId) || !Number.isFinite(userId) || !Number.isFinite(gross)) {
+                Alert.alert('Errore', 'Dati non validi');
+                return;
+              }
+              setMerchantLoading(true);
+              try {
+                const res = await payPrepare({ userId, merchantId, gross });
+                console.log('[merchant] payPrepare', res);
+                setMerchantPrepare(res);
+                setMerchantQrVisible(true);
+              } catch (e: any) {
+                Alert.alert('Errore', e?.body?.error || e?.message || 'Errore prepare');
+              } finally {
+                setMerchantLoading(false);
+              }
+            }}>
+            <Text style={styles.primaryBtnText}>Genera QR pagamento</Text>
+          </TouchableOpacity>
+          {merchantLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+          {qrPayload ? (
+            <View style={styles.card}>
+              <Text style={styles.cardMeta}>QR pagamento</Text>
+            </View>
+          ) : null}
+          {!qrPayload ? (
+            <View style={styles.card}>
+              <Text style={styles.cardMeta}>QR non generato</Text>
+              <Text style={styles.cardMeta}>Premi “Genera QR pagamento” per creare il codice.</Text>
+              {merchantPrepare ? (
+                <Text style={styles.cardMeta}>{JSON.stringify(merchantPrepare)}</Text>
+              ) : null}
+            </View>
+          ) : null}
+            </>
+          ) : merchantTab === 'offers' ? (
+            <>
+              <Text style={styles.subtitle}>Crea un’offerta che apparirà all’utente</Text>
+              <View style={styles.card}>
+                <Text style={styles.cardMeta}>Titolo</Text>
+                <TextInput
+                  style={[styles.input, errorInput('title')]}
+                  value={offerTitle}
+                  onChangeText={setOfferTitle}
+                  placeholder="Es. Cena vista mare"
+                />
+                {offerErrors.title ? <Text style={styles.errorText}>{offerErrors.title}</Text> : null}
+                <Text style={styles.cardMeta}>Descrizione</Text>
+                <TextInput
+                  style={styles.input}
+                  value={offerDescription}
+                  onChangeText={setOfferDescription}
+                  placeholder="Dettagli offerta"
+                />
+                <Text style={[styles.cardMeta, styles.cardMetaStrong]}>Prezzo offerta (€)</Text>
+                <TextInput
+                  style={[styles.input, errorInput('price')]}
+                  value={offerPriceInput}
+                  onChangeText={setOfferPriceInput}
+                  keyboardType="decimal-pad"
+                  placeholder="Es. 10,00"
+                />
+                {offerErrors.price ? <Text style={styles.errorText}>{offerErrors.price}</Text> : null}
+                <Text style={styles.cardMeta}>Prezzo commerciale (€)</Text>
+                <TextInput
+                  style={[styles.input, errorInput('standardPrice')]}
+                  value={offerStandardPriceInput}
+                  onChangeText={setOfferStandardPriceInput}
+                  keyboardType="decimal-pad"
+                  placeholder="Es. 15,00"
+                />
+                {offerErrors.standardPrice ? <Text style={styles.errorText}>{offerErrors.standardPrice}</Text> : null}
+                <Text style={styles.cardMeta}>Tipo evento</Text>
+                <TextInput style={styles.input} value={offerMealType} onChangeText={setOfferMealType} placeholder="Pranzo / Cena" />
+                <Text style={styles.cardMeta}>Città</Text>
+                <TextInput style={styles.input} value={offerCity} onChangeText={setOfferCity} />
+                <Text style={styles.cardMeta}>Inizio</Text>
+                <View style={styles.row}>
+                  <TouchableOpacity
+                    style={[styles.input, styles.inputHalf, errorInput('time')]}
+                    onPress={() => setShowStartDatePicker(true)}>
+                    <Text>{offerStartDate}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.input, styles.inputHalf, errorInput('time')]}
+                    onPress={() => setShowStartTimePicker(true)}>
+                    <Text>{offerStartTime}</Text>
+                  </TouchableOpacity>
+                </View>
+                {offerErrors.time ? <Text style={styles.errorText}>{offerErrors.time}</Text> : null}
+                <Text style={styles.cardMeta}>Fine</Text>
+                <View style={styles.row}>
+                  <TouchableOpacity
+                    style={[styles.input, styles.inputHalf, errorInput('time')]}
+                    onPress={() => setShowEndDatePicker(true)}>
+                    <Text>{offerEndDate}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.input, styles.inputHalf, errorInput('time')]}
+                    onPress={() => setShowEndTimePicker(true)}>
+                    <Text>{offerEndTime}</Text>
+                  </TouchableOpacity>
+                </View>
+                {offerErrors.time ? <Text style={styles.errorText}>{offerErrors.time}</Text> : null}
+                <View style={styles.row}>
+                  <TouchableOpacity
+                    style={styles.secondaryBtn}
+                    onPress={() => {
+                      const nowRounded = roundTo5(new Date());
+                      setOfferStartDate(nowRounded.toISOString().slice(0,10));
+                      setOfferStartTime(nowRounded.toTimeString().slice(0,5));
+                      const end = new Date(nowRounded.getTime() + 2 * 60 * 60 * 1000);
+                      setOfferEndDate(end.toISOString().slice(0,10));
+                      setOfferEndTime(end.toTimeString().slice(0,5));
+                    }}>
+                    <Text style={styles.secondaryBtnText}>Adesso</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.secondaryBtn} onPress={() => setOfferEndTime(nextHour(offerStartTime, 1))}>
+                    <Text style={styles.secondaryBtnText}>+1h</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.secondaryBtn} onPress={() => setOfferEndTime(nextHour(offerStartTime, 2))}>
+                    <Text style={styles.secondaryBtnText}>+2h</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.cardMeta}>Quantità disponibile</Text>
+                <TextInput
+                  style={[styles.input, errorInput('qty')]}
+                  value={offerQtyInput}
+                  onChangeText={setOfferQtyInput}
+                  keyboardType="number-pad"
+                />
+                {offerErrors.qty ? <Text style={styles.errorText}>{offerErrors.qty}</Text> : null}
+              </View>
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={async () => {
+                  const errors: typeof offerErrors = {};
+                  const merchantId = Number(merchantIdInput);
+                  const price = Number(offerPriceInput.replace(',', '.'));
+                  const standardPrice = Number(offerStandardPriceInput.replace(',', '.'));
+                  const qty = Number(offerQtyInput);
+                  const startsAt = `${offerStartDate}T${offerStartTime}:00`;
+                  const endsAt = `${offerEndDate}T${offerEndTime}:00`;
+                  const startDate = new Date(startsAt);
+                  const endDate = new Date(endsAt);
+                  if (!Number.isFinite(startDate.getTime()) || !Number.isFinite(endDate.getTime()) || endDate <= startDate) {
+                    errors.time = 'La fine deve essere successiva all’inizio';
+                    Alert.alert('Errore', 'La fine deve essere successiva all’inizio');
+                  }
+                  if (!Number.isFinite(merchantId)) {
+                    errors.merchantId = 'Merchant ID non valido';
+                  }
+                  if (!offerTitle.trim()) {
+                    errors.title = 'Titolo obbligatorio';
+                  }
+                  if (!Number.isFinite(price) || price <= 0) {
+                    errors.price = 'Prezzo non valido';
+                  }
+                  if (!Number.isFinite(standardPrice) || standardPrice <= 0) {
+                    errors.standardPrice = 'Prezzo standard non valido';
+                  }
+                  if (Number.isFinite(standardPrice) && Number.isFinite(price) && standardPrice <= price) {
+                    errors.standardPrice = 'Prezzo standard deve essere maggiore del prezzo offerta';
+                  }
+                  if (Number.isFinite(qty) && qty <= 0) {
+                    errors.qty = 'Quantità deve essere > 0';
+                  }
+                  setOfferErrors(errors);
+                  if (Object.keys(errors).length > 0) return;
+                  setOfferLoading(true);
+                  try {
+                    const res = await createFlashOffer({
+                      merchantId,
+                      title: offerTitle,
+                      description: offerDescription || null,
+                      price,
+                      standardPrice,
+                      mealType: offerMealType || null,
+                      city: offerCity || null,
+                      startsAt,
+                      endsAt,
+                    quantityAvailable: Number.isFinite(qty) ? qty : null,
+                  });
+                    setOfferResult(res);
+                    Alert.alert('Offerta pubblicata', `ID #${res.id}`);
+                  } catch (e: any) {
+                    Alert.alert('Errore', e?.body?.error || e?.message || 'Errore pubblicazione');
+                  } finally {
+                    setOfferLoading(false);
+                  }
+                }}>
+                <Text style={styles.primaryBtnText}>Pubblica offerta</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryBtn}
+                onPress={() => {
+                  setOfferTitle('');
+                  setOfferDescription('');
+                  setOfferPriceInput('');
+                  setOfferStandardPriceInput('');
+                  setOfferMealType('Cena');
+                  setOfferCity(DEMO_CITY);
+                  const nowRounded = roundTo5(new Date());
+                  setOfferStartDate(nowRounded.toISOString().slice(0,10));
+                  setOfferStartTime(nowRounded.toTimeString().slice(0,5));
+                  const end = new Date(nowRounded.getTime() + 2 * 60 * 60 * 1000);
+                  setOfferEndDate(end.toISOString().slice(0,10));
+                  setOfferEndTime(end.toTimeString().slice(0,5));
+                  setOfferQtyInput('20');
+                  setOfferErrors({});
+                  setOfferResult(null);
+                }}>
+                <Text style={styles.secondaryBtnText}>Reset form</Text>
+              </TouchableOpacity>
+              {offerLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              {offerResult ? (
+                <View style={styles.card}>
+                  <Text style={styles.cardMeta}>Offerta creata</Text>
+                  <Text style={styles.cardMeta}>#{offerResult.id} • {offerResult.title}</Text>
+                  <Text style={styles.cardMeta}>{offerResult.description || '—'}</Text>
+                  <Text style={styles.cardMeta}>€ {fmtMoney(offerResult.price)}</Text>
+                  <Text style={styles.cardMeta}>Tipo evento: {offerResult.mealType || '—'}</Text>
+                  <Text style={styles.cardMeta}>Città: {offerResult.merchant?.city || offerCity || '—'}</Text>
+                  <Text style={styles.cardMeta}>Inizio: {offerResult.startsAt}</Text>
+                  <Text style={styles.cardMeta}>Fine: {offerResult.endsAt}</Text>
+                  <Text style={styles.cardMeta}>Quantità: {offerResult.quantityAvailable ?? '—'}</Text>
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <Text style={styles.subtitle}>Prenotazioni ricevute</Text>
+              {merchantReservationsLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              {merchantReservations.map((r) => {
+                const start = r.offer?.startTime ? new Date(r.offer.startTime) : null;
+                const isLate = start ? Date.now() > start.getTime() + 15 * 60 * 1000 : false;
+                const shouldFlash = isLate && r.depositStatus === 'held';
+                return (
+                <TouchableOpacity
+                  key={r.id}
+                  style={[
+                    styles.card,
+                    shouldFlash && flashOn ? styles.flashCard : null,
+                    shouldFlash && !flashOn ? styles.flashCardAlt : null,
+                  ]}
+                  onPress={() => {
+                    if (shouldFlash) {
+                      setSelectedReservation(r);
+                      setConfirmModalVisible(true);
+                    }
+                  }}>
+                  <Text style={styles.cardTitle}>Prenotazione #{r.id}</Text>
+                  <Text style={styles.cardMeta}>Cliente: {r.user?.fullName || '—'}</Text>
+                  <Text style={styles.cardMeta}>Cauzione: {r.depositStatus || '—'} • € {r.depositAmount || '0,00'}</Text>
+                  <Text style={styles.cardMeta}>Offerta: {r.offer?.title || '—'}</Text>
+                  <Text style={styles.cardMeta}>Prezzo per persona: € {r.offer?.price || '0,00'}</Text>
+                  <Text style={styles.cardMeta}>Persone: {r.partySize || 1}</Text>
+                  <Text style={styles.cardMeta}>Totale: € {fmtMoney((r.offer?.price ? Number(r.offer.price) : 0) * (r.partySize || 1))}</Text>
+                  <TouchableOpacity
+                    style={styles.primaryBtn}
+                    onPress={async () => {
+                      try {
+                        const res = await payPrepareReservation({
+                          reservationId: r.id,
+                          merchantId: Number(merchantIdInput),
+                        });
+                        setMerchantPrepare(res);
+                        setMerchantQrVisible(true);
+                      } catch (e: any) {
+                        Alert.alert('Errore', e?.body?.error || e?.message || 'Errore QR prenotazione');
+                      }
+                    }}>
+                    <Text style={styles.primaryBtnText}>Genera QR prenotazione</Text>
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              )})}
+              <Modal visible={confirmModalVisible} transparent animationType="fade">
+                <View style={styles.modalBackdrop}>
+                  <View style={styles.modalCard}>
+                    <Text style={styles.cardTitle}>Cliente presente?</Text>
+                    <View style={styles.row}>
+                      <TouchableOpacity
+                        style={[styles.primaryBtn, styles.confirmBtn]}
+                        onPress={async () => {
+                          if (!selectedReservation) return;
+                          Alert.alert(
+                            'Conferma presenza',
+                            'Confermi che il cliente è presente?',
+                            [
+                              { text: 'Annulla', style: 'cancel' },
+                              { text: 'Conferma', onPress: async () => {
+                                  await confirmReservationArrival(selectedReservation.id);
+                                  setConfirmModalVisible(false);
+                                  loadMerchantReservations();
+                                } },
+                            ]
+                          );
+                        }}>
+                        <Text style={styles.primaryBtnText}>✅</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.secondaryBtn, styles.denyBtn]}
+                        onPress={async () => {
+                          if (!selectedReservation) return;
+                          Alert.alert(
+                            'Conferma assenza',
+                            'Confermi che il cliente NON è presente?',
+                            [
+                              { text: 'Annulla', style: 'cancel' },
+                              { text: 'Conferma', onPress: async () => {
+                                  await cancelReservation(selectedReservation.id);
+                                  setConfirmModalVisible(false);
+                                  loadMerchantReservations();
+                                } },
+                            ]
+                          );
+                        }}>
+                        <Text style={styles.secondaryBtnText}>⛔️</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
+            </>
+          )}
+        </ScrollView>
+        {showStartDatePicker ? (
+          <DateTimePicker
+            value={new Date(`${offerStartDate}T${offerStartTime}:00`)}
+            mode="date"
+            onChange={(_, d) => {
+              setShowStartDatePicker(false);
+              if (d) setOfferStartDate(d.toISOString().slice(0,10));
+            }}
+          />
+        ) : null}
+        {showStartTimePicker ? (
+          <DateTimePicker
+            value={new Date(`${offerStartDate}T${offerStartTime}:00`)}
+            mode="time"
+            onChange={(_, d) => {
+              setShowStartTimePicker(false);
+              if (d) setOfferStartTime(d.toTimeString().slice(0,5));
+            }}
+          />
+        ) : null}
+        {showEndDatePicker ? (
+          <DateTimePicker
+            value={new Date(`${offerEndDate}T${offerEndTime}:00`)}
+            mode="date"
+            onChange={(_, d) => {
+              setShowEndDatePicker(false);
+              if (d) setOfferEndDate(d.toISOString().slice(0,10));
+            }}
+          />
+        ) : null}
+        {showEndTimePicker ? (
+          <DateTimePicker
+            value={new Date(`${offerEndDate}T${offerEndTime}:00`)}
+            mode="time"
+            onChange={(_, d) => {
+              setShowEndTimePicker(false);
+              if (d) setOfferEndTime(d.toTimeString().slice(0,5));
+            }}
+          />
+        ) : null}
+        <Modal visible={merchantQrVisible} animationType="slide" transparent={false}>
+          <SafeAreaView style={styles.qrFull}>
+            <Text style={styles.qrTitle}>Mostra questo QR al cliente</Text>
+            {qrPayload ? <QRCode value={qrPayload} size={260} /> : null}
+            {qrPayload ? <Text style={styles.qrPayload}>{qrPayload}</Text> : null}
+            <TouchableOpacity style={styles.primaryBtn} onPress={() => setMerchantQrVisible(false)}>
+              <Text style={styles.primaryBtnText}>Chiudi</Text>
+            </TouchableOpacity>
+          </SafeAreaView>
+        </Modal>
+      </SafeAreaView>
+    );
+  }
+
+  function renderHost() {
+    return (
+      <SafeAreaView style={[backgroundStyle,{flex:1}]}>
+        <View style={styles.screen}>
+          <Text style={styles.title}>Host</Text>
+          <Text style={styles.subtitle}>Funzionalità host in arrivo.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <View style={{flex:1}}>
-      
-      <SafeAreaView style={[backgroundStyle,{flex:1}]}>
-      <View style={styles.bgGlowTop} />
-      <View style={styles.bgGlowBottom} />
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <View style={styles.screen}>
-        {activeTab === 'offers' && renderOffersTab()}
-        {activeTab === 'bookings' && renderBookingsTab()}
-        {activeTab === 'wallet' && renderWalletTab()}
-        {activeTab === 'profile' && renderProfileTab()}
-        <View style={styles.tabBar}>
-          <TabButton label="Offerte" badge={notifCounts.offers} active={activeTab === 'offers'} onPress={() => setActiveTab('offers')} />
-          <TabButton label="Prenotazioni" badge={notifCounts.bookings} active={activeTab === 'bookings'} onPress={() => setActiveTab('bookings')} />
-          <TabButton label="Wallet" active={activeTab === 'wallet'} onPress={() => setActiveTab('wallet')} />
-          <TabButton label="Profilo" active={activeTab === 'profile'} onPress={() => setActiveTab('profile')} />
-        </View>
-      </View>
-    </SafeAreaView>
+      {role === null ? renderRolePicker() : null}
+      {role === 'merchant' ? renderMerchant() : null}
+      {role === 'host' ? renderHost() : null}
+      {role === 'client' ? (
+        <>
+          <SafeAreaView style={[backgroundStyle,{flex:1}]}>
+            <View style={styles.bgGlowTop} />
+            <View style={styles.bgGlowBottom} />
+            <StatusBar
+              barStyle={isDarkMode ? 'light-content' : 'dark-content'}
+              backgroundColor={backgroundStyle.backgroundColor}
+            />
+            <View style={styles.screen}>
+              {activeTab === 'offers' && renderOffersTab()}
+              {activeTab === 'bookings' && renderBookingsTab()}
+              {activeTab === 'wallet' && renderWalletTab()}
+              {activeTab === 'profile' && renderProfileTab()}
+              <View style={styles.tabBar}>
+                <TabButton label="Offerte" badge={notifCounts.offers} active={activeTab === 'offers'} onPress={() => setActiveTab('offers')} />
+                <TabButton label="Prenotazioni" badge={notifCounts.bookings} active={activeTab === 'bookings'} onPress={() => setActiveTab('bookings')} />
+                <TabButton label="Wallet" active={activeTab === 'wallet'} onPress={() => setActiveTab('wallet')} />
+                <TabButton label="Profilo" active={activeTab === 'profile'} onPress={() => setActiveTab('profile')} />
+              </View>
+            </View>
+          </SafeAreaView>
+          <Modal visible={scanVisible} animationType="slide" transparent={false}>
+            <SafeAreaView style={styles.qrFull}>
+              <Text style={styles.qrTitle}>Inquadra il QR dell’esercente</Text>
+              {!device ? (
+                <Text style={styles.cardMeta}>Fotocamera non disponibile</Text>
+              ) : null}
+              {device ? (
+                <Camera style={{ width: '100%', height: 420 }} device={device} isActive={scanVisible} codeScanner={codeScanner} />
+              ) : null}
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => setScanVisible(false)}>
+                <Text style={styles.primaryBtnText}>Chiudi</Text>
+              </TouchableOpacity>
+            </SafeAreaView>
+          </Modal>
+        </>
+      ) : null}
     </View>
   );
+}
+
+function nextHour(time: string, add: number) {
+  const [h, m] = time.split(':').map(Number);
+  const d = new Date();
+  d.setHours((h + add) % 24);
+  d.setMinutes(m || 0);
+  return d.toTimeString().slice(0,5);
+}
+
+function roundTo5(date: Date) {
+  const ms = 5 * 60 * 1000;
+  return new Date(Math.ceil(date.getTime() / ms) * ms);
+}
+
+function fmtMoney(v: number | string | null | undefined) {
+  if (v == null) return '0.00';
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return '0.00';
+  return n.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function TabButton({label, active, onPress, badge}: {label: string; active: boolean; onPress: () => void; badge?: number}) {
@@ -798,6 +1557,32 @@ const styles = StyleSheet.create({
     color: THEME.inkSoft,
     marginBottom: 4,
   },
+  cardMetaStrong: {
+    fontWeight: '700',
+  },
+  flashCard: {
+    borderColor: '#E76F51',
+    borderWidth: 2,
+    backgroundColor: '#FFE8DF',
+    transform: [{ scale: 1.02 }],
+  },
+  flashCardAlt: {
+    backgroundColor: '#FFF2E9',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalCard: {
+    backgroundColor: THEME.card,
+    padding: 20,
+    borderRadius: 16,
+    width: '80%',
+  },
+  confirmBtn: { flex: 1, marginRight: 8, alignItems: 'center' },
+  denyBtn: { flex: 1, alignItems: 'center' },
   row: {
     flexDirection: 'row',
     gap: 8,
@@ -852,6 +1637,47 @@ const styles = StyleSheet.create({
     color: THEME.ink,
     fontWeight: '700',
   },
+  planActive: {
+    backgroundColor: THEME.bgAlt,
+  },
+  merchantTabBar: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+  },
+  merchantTab: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    alignItems: 'center',
+    backgroundColor: THEME.card,
+  },
+  merchantTabActive: {
+    backgroundColor: THEME.coral,
+    borderColor: THEME.coral,
+  },
+  merchantTabText: { color: THEME.ink, fontWeight: '700' },
+  merchantTabTextActive: { color: '#fff' },
+  errorText: {
+    color: '#B00020',
+    fontSize: 12,
+    marginBottom: 6,
+  },
+  inputError: {
+    borderColor: '#B00020',
+  },
+  qrFull: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    backgroundColor: THEME.bg,
+    padding: 24,
+  },
+  qrTitle: { fontSize: 16, fontWeight: '700', color: THEME.ink },
+  qrPayload: { fontSize: 11, color: THEME.inkSoft, textAlign: 'center' },
   ghostBtn: {
     borderWidth: 1,
     borderColor: THEME.sage,
@@ -964,9 +1790,17 @@ const styles = StyleSheet.create({
   txRowWrap: {
     marginBottom: 6,
   },
+  txRowHighlight: {
+    backgroundColor: '#FFF2E9',
+    borderRadius: 10,
+    padding: 8,
+  },
   txLabel: {
     fontSize: 12,
     color: THEME.inkSoft,
+  },
+  txLabelBold: {
+    fontWeight: '700',
   },
   txAmount: {
     fontSize: 12,
@@ -974,6 +1808,10 @@ const styles = StyleSheet.create({
     color: THEME.ink,
   },
   txMerchant: {
+    fontSize: 11,
+    color: THEME.inkSoft,
+  },
+  txMeta: {
     fontSize: 11,
     color: THEME.inkSoft,
   },
@@ -991,6 +1829,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     backgroundColor: THEME.card,
   },
+  inputHalf: { flex: 1 },
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: 1,
@@ -1079,6 +1918,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 12,
   },
+  savingsPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#E6F4EA',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    marginTop: 6,
+  },
+  savingsPillText: { color: '#1B5E20', fontWeight: '700', fontSize: 12 },
   offerMetaRow: {
     flexDirection: 'row',
     gap: 8,

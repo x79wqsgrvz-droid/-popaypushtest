@@ -6,7 +6,7 @@ type HttpError = {
 };
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:3000";
-const FORCE_LOCALHOST_BACKEND = true;
+const FORCE_LOCALHOST_BACKEND = false;
 const DEV_HOST = "192.168.1.29";
 
 function getMetroHost(): string | null {
@@ -91,6 +91,8 @@ export type WalletTx = {
   gross_amount?: number | null;
   net_amount?: number | null;
   savings?: number | null;
+  is_reservation?: boolean;
+  offer?: { id: number; title: string; price: string; standardPrice?: string | null } | null;
   merchant: { id: number; name: string; category: string | null } | null;
 };
 
@@ -139,6 +141,7 @@ export type FlashOfferListItem = {
   title: string;
   description: string | null;
   price: string;
+  standardPrice?: string | null;
   mealType?: string | null;
   startsAt: string;
   endsAt: string;
@@ -155,6 +158,71 @@ export type FlashOfferDetail = FlashOfferListItem & {
     city: string | null;
   } | null;
 };
+
+export type MerchantReservationItem = {
+  id: number;
+  userId: number | null;
+  businessId: number | null;
+  createdAt: string;
+  partySize: number | null;
+  depositStatus: string | null;
+  depositAmount: string | null;
+  user: { id: number; fullName: string } | null;
+  offer: {
+    id: number;
+    title: string;
+    price: string;
+    mealType: string | null;
+    startTime: string;
+    endTime: string;
+  } | null;
+};
+
+export async function getMerchantReservations(businessId: number) {
+  return request<{ count: number; items: MerchantReservationItem[] }>(
+    `/api/reservations/merchant?businessId=${businessId}`
+  );
+}
+
+export async function payPrepareReservation(payload: { reservationId: number; merchantId: number }) {
+  return request<{
+    transactionId: number;
+    reservationId: number;
+    merchantId: number;
+    userId: number | null;
+    partySize?: number;
+    unitPrice?: string;
+    standardPrice?: string | null;
+    gross: string;
+    discount: string;
+    discountPct: number;
+    net: string;
+    status: string;
+  }>("/api/pay/prepare-reservation", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createFlashOffer(payload: {
+  merchantId: number;
+  title: string;
+  description?: string | null;
+  price: number;
+  standardPrice: number;
+  mealType?: string | null;
+  city?: string | null;
+  startsAt: string;
+  endsAt: string;
+  quantityAvailable?: number | null;
+}) {
+  return request<FlashOfferDetail>("/api/flash-offers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
 
 export async function listFlashOffersNearby(city: string) {
   const q = encodeURIComponent(city);
@@ -247,6 +315,12 @@ export async function cancelReservation(id: number) {
   );
 }
 
+export async function confirmReservationArrival(id: number) {
+  return request<{ ok: true; status: string }>(`/api/reservations/${id}/confirm-arrival`, {
+    method: "POST",
+  });
+}
+
 export async function requestRefund(userId: number, token: string) {
   return request<{ refund: any }>("/api/me/refunds/request", {
     method: "POST",
@@ -276,5 +350,39 @@ export async function getNotificationCounts(userId: number, token: string) {
       "X-User-Id": String(userId),
       "X-Activation-Token": token,
     },
+  });
+}
+
+export async function payPrepare(payload: { userId: number; merchantId: number; gross: number }) {
+  return request<{
+    transactionId: number;
+    merchantId: number;
+    userId: number;
+    gross: string;
+    discount: string;
+    discountPct: number;
+    net: string;
+    merchantPlan: string;
+    merchantFeePct: number;
+    merchantFeeAmount: string;
+    merchantNet: string;
+    status: string;
+  }>("/api/pay/prepare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function payConfirm(payload: { userId: number; token: string; transactionId: number; walletId: number }) {
+  const { userId, token, transactionId, walletId } = payload;
+  return request<{ ok: true; transaction: { id: number; net_amount: string; status: string } }>("/api/pay/confirm", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Id": String(userId),
+      "X-Activation-Token": token,
+    },
+    body: JSON.stringify({ transactionId, walletId }),
   });
 }
