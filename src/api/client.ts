@@ -262,8 +262,18 @@ export type MerchantNotification = {
 };
 
 export async function getMerchantNotifications(businessId: number) {
-  return request<{ count: number; items: MerchantNotification[] }>(
+  return request<{ count: number; unreadCount: number; items: MerchantNotification[] }>(
     `/api/merchants/${businessId}/notifications`
+  );
+}
+
+export async function markMerchantNotificationRead(
+  businessId: number,
+  notificationId: number
+) {
+  return request<{ ok: true; updated: boolean }>(
+    `/api/merchants/${businessId}/notifications/${notificationId}/read`,
+    { method: "PATCH" }
   );
 }
 

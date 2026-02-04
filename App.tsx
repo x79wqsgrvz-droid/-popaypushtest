@@ -52,6 +52,7 @@ import {
   updateMerchantDemandWindows,
   updateMerchantPlan,
   getMerchantNotifications,
+  markMerchantNotificationRead,
   registerPushToken,
   getNotificationCounts,
   type FlashOfferListItem,
@@ -111,6 +112,8 @@ function App(): JSX.Element {
   const [merchantNotificationsLoading, setMerchantNotificationsLoading] = useState(false);
   const [merchantNotificationsExpanded, setMerchantNotificationsExpanded] = useState(false);
   const [merchantNotificationsCount, setMerchantNotificationsCount] = useState(0);
+  const [merchantNotificationOpenId, setMerchantNotificationOpenId] = useState<number | null>(null);
+  const NOTIFICATIONS_TTL_DAYS = 7;
   const [merchantLoading, setMerchantLoading] = useState(false);
   const [merchantPrepare, setMerchantPrepare] = useState<any | null>(null);
   const [merchantQrVisible, setMerchantQrVisible] = useState(false);
@@ -353,12 +356,17 @@ function App(): JSX.Element {
     setMerchantNotificationsLoading(true);
     try {
       const res = await getMerchantNotifications(merchantId);
-      setMerchantNotifications(res.items || []);
-      const nextCount = res.count ?? (res.items || []).length;
-      if (nextCount > merchantNotificationsCount) {
+      const cutoff = Date.now() - NOTIFICATIONS_TTL_DAYS * 24 * 60 * 60 * 1000;
+      const items = (res.items || []).filter((n: any) => {
+        const ts = new Date(n.created_at).getTime();
+        return Number.isFinite(ts) && ts >= cutoff;
+      });
+      setMerchantNotifications(items);
+      const nextUnread = Math.max(0, Number(res.unreadCount ?? items.length));
+      if (nextUnread > merchantNotificationsCount) {
         setMerchantNotificationsExpanded(true);
       }
-      setMerchantNotificationsCount(nextCount);
+      setMerchantNotificationsCount(nextUnread);
     } catch (e) {
       console.warn('[merchant] notifications error', e);
     } finally {
@@ -1214,15 +1222,39 @@ function App(): JSX.Element {
                     <Text style={styles.cardMeta}>Nessuna notifica disponibile.</Text>
                   ) : (
                     <View style={styles.recoList}>
-                      {merchantNotifications.map((n) => (
-                        <View key={n.id} style={styles.recoItem}>
-                          <Text style={styles.cardMeta}>{n.title}</Text>
-                          <Text style={styles.cardMeta}>{n.body}</Text>
-                          <Text style={styles.cardMeta}>
-                            {new Date(n.created_at).toLocaleString()}
-                          </Text>
-                        </View>
-                      ))}
+                      {merchantNotifications.map((n) => {
+                        const isOpen = merchantNotificationOpenId === n.id;
+                        return (
+                          <TouchableOpacity
+                            key={n.id}
+                            style={styles.notificationItem}
+                            onPress={async () => {
+                              const nextOpen = isOpen ? null : n.id;
+                              setMerchantNotificationOpenId(nextOpen);
+                              if (!isOpen && !n.read_at) {
+                                try {
+                                  await markMerchantNotificationRead(Number(merchantIdInput), n.id);
+                                  setMerchantNotifications((prev) =>
+                                    prev.map((x: any) => x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)
+                                  );
+                                  setMerchantNotificationsCount((c) => Math.max(0, c - 1));
+                                } catch (e) {
+                                  console.warn('[merchant] read notification error', e);
+                                }
+                              }
+                            }}>
+                            <View style={styles.notificationHeader}>
+                              <Text style={styles.notificationTitle}>{n.title}</Text>
+                              <Text style={styles.notificationDate}>
+                                {new Date(n.created_at).toLocaleString()}
+                              </Text>
+                            </View>
+                            {isOpen ? (
+                              <Text style={styles.notificationBody}>{n.body}</Text>
+                            ) : null}
+                          </TouchableOpacity>
+                        );
+                      })}
                     </View>
                   )
                 ) : (
@@ -2165,6 +2197,36 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderBottomWidth: 1,
     borderBottomColor: THEME.border,
+  },
+  notificationItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    backgroundColor: THEME.bgAlt,
+    marginBottom: 8,
+  },
+  notificationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  notificationTitle: {
+    color: THEME.ink,
+    fontWeight: '800',
+    flex: 1,
+  },
+  notificationBody: {
+    color: THEME.inkSoft,
+    marginBottom: 6,
+    marginTop: 8,
+  },
+  notificationDate: {
+    color: THEME.inkSoft,
+    fontSize: 12,
+    marginLeft: 8,
   },
   notificationsHeader: {
     flexDirection: 'row',
