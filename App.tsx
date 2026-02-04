@@ -109,6 +109,8 @@ function App(): JSX.Element {
   const [merchantPlanSaving, setMerchantPlanSaving] = useState(false);
   const [merchantNotifications, setMerchantNotifications] = useState<any[]>([]);
   const [merchantNotificationsLoading, setMerchantNotificationsLoading] = useState(false);
+  const [merchantNotificationsExpanded, setMerchantNotificationsExpanded] = useState(false);
+  const [merchantNotificationsCount, setMerchantNotificationsCount] = useState(0);
   const [merchantLoading, setMerchantLoading] = useState(false);
   const [merchantPrepare, setMerchantPrepare] = useState<any | null>(null);
   const [merchantQrVisible, setMerchantQrVisible] = useState(false);
@@ -352,6 +354,11 @@ function App(): JSX.Element {
     try {
       const res = await getMerchantNotifications(merchantId);
       setMerchantNotifications(res.items || []);
+      const nextCount = res.count ?? (res.items || []).length;
+      if (nextCount > merchantNotificationsCount) {
+        setMerchantNotificationsExpanded(true);
+      }
+      setMerchantNotificationsCount(nextCount);
     } catch (e) {
       console.warn('[merchant] notifications error', e);
     } finally {
@@ -1171,22 +1178,55 @@ function App(): JSX.Element {
                 )}
               </View>
               <View style={styles.card}>
-                <Text style={styles.cardTitle}>Notifiche</Text>
+                <View style={styles.notificationsHeader}>
+                  <TouchableOpacity
+                    style={styles.notificationsToggle}
+                    onPress={() => setMerchantNotificationsExpanded((v) => !v)}>
+                    <Text style={styles.cardTitle}>Notifiche</Text>
+                    <View style={styles.notificationsBadge}>
+                      <Text style={styles.notificationsBadgeText}>{merchantNotificationsCount}</Text>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.ghostBtn} onPress={loadMerchantNotifications}>
+                    <Text style={styles.ghostBtnText}>Aggiorna</Text>
+                  </TouchableOpacity>
+                  {__DEV__ ? (
+                    <TouchableOpacity
+                      style={styles.ghostBtn}
+                      onPress={() => {
+                        const fake = {
+                          id: Date.now(),
+                          title: 'Notifica demo',
+                          body: 'Questa è una notifica simulata.',
+                          created_at: new Date().toISOString(),
+                        };
+                        setMerchantNotifications((prev) => [fake, ...prev]);
+                        setMerchantNotificationsCount((c) => c + 1);
+                        setMerchantNotificationsExpanded(true);
+                      }}>
+                      <Text style={styles.ghostBtnText}>Simula</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
                 {merchantNotificationsLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
-                {merchantNotifications.length === 0 ? (
-                  <Text style={styles.cardMeta}>Nessuna notifica disponibile.</Text>
+                {merchantNotificationsExpanded ? (
+                  merchantNotifications.length === 0 ? (
+                    <Text style={styles.cardMeta}>Nessuna notifica disponibile.</Text>
+                  ) : (
+                    <View style={styles.recoList}>
+                      {merchantNotifications.map((n) => (
+                        <View key={n.id} style={styles.recoItem}>
+                          <Text style={styles.cardMeta}>{n.title}</Text>
+                          <Text style={styles.cardMeta}>{n.body}</Text>
+                          <Text style={styles.cardMeta}>
+                            {new Date(n.created_at).toLocaleString()}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )
                 ) : (
-                  <View style={styles.recoList}>
-                    {merchantNotifications.map((n) => (
-                      <View key={n.id} style={styles.recoItem}>
-                        <Text style={styles.cardMeta}>{n.title}</Text>
-                        <Text style={styles.cardMeta}>{n.body}</Text>
-                        <Text style={styles.cardMeta}>
-                          {new Date(n.created_at).toLocaleString()}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
+                  <Text style={styles.cardMeta}>Tocca per visualizzare l’elenco.</Text>
                 )}
               </View>
             </>
@@ -2125,6 +2165,27 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderBottomWidth: 1,
     borderBottomColor: THEME.border,
+  },
+  notificationsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  notificationsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  notificationsBadge: {
+    backgroundColor: THEME.coral,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  notificationsBadgeText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
   },
   merchantHeader: {
     flexDirection: 'row',
