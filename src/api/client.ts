@@ -205,6 +205,53 @@ export async function payPrepareReservation(payload: { reservationId: number; me
   });
 }
 
+export type MerchantDemandWindow = {
+  label: string;
+  start: string;
+  end: string;
+  demandPercent: number;
+};
+
+export type MerchantDemand = {
+  businessId: number;
+  activityType: string;
+  activeUsers: number;
+  mealPlanCounts: { FULL_BOARD: number; HALF_BOARD: number; BREAKFAST: number; NONE: number };
+  windows: MerchantDemandWindow[];
+  updatedAt: string;
+};
+
+export async function getMerchantDemand(businessId: number) {
+  return request<MerchantDemand>(`/api/merchants/${businessId}/demand`);
+}
+
+export async function updateMerchantDemandWindows(
+  businessId: number,
+  payload: {
+    activityType?: string;
+    window1?: { label?: string; start?: string; end?: string };
+    window2?: { label?: string; start?: string; end?: string };
+    window3?: { label?: string; start?: string; end?: string };
+  }
+) {
+  return request<{ ok: true; business: any }>(`/api/merchants/${businessId}/demand-windows`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateMerchantPlan(
+  businessId: number,
+  plan: 'BASIC' | 'RECOMMENDED' | 'OFFERS'
+) {
+  return request<{ ok: true; businessId: number; plan: string }>(`/api/merchants/${businessId}/plan`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plan }),
+  });
+}
+
 export async function createFlashOffer(payload: {
   merchantId: number;
   title: string;

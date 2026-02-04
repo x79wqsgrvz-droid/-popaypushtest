@@ -48,6 +48,9 @@ import {
   getMerchantReservations,
   payPrepareReservation,
   confirmReservationArrival,
+  getMerchantDemand,
+  updateMerchantDemandWindows,
+  updateMerchantPlan,
   registerPushToken,
   getNotificationCounts,
   type FlashOfferListItem,
@@ -82,7 +85,7 @@ const MERCHANT_FEE_BY_PLAN: Record<MerchantPlan, number> = {
   RECOMMENDED: 3,
   OFFERS: 4,
 };
-type MerchantTab = 'payments' | 'offers' | 'reservations';
+type MerchantTab = 'profile' | 'payments' | 'offers' | 'reservations' | 'demand' | 'plan';
 type TabKey = 'offers' | 'bookings' | 'wallet' | 'profile';
 type BookingView = Reservation & {
   offerTitle?: string | null;
@@ -101,12 +104,29 @@ function App(): JSX.Element {
   const [merchantUserIdInput, setMerchantUserIdInput] = useState('1');
   const [merchantGrossInput, setMerchantGrossInput] = useState('0');
   const [merchantPlan, setMerchantPlan] = useState<MerchantPlan>('BASIC');
+  const [merchantPlanDraft, setMerchantPlanDraft] = useState<MerchantPlan>('BASIC');
+  const [merchantPlanSaving, setMerchantPlanSaving] = useState(false);
   const [merchantLoading, setMerchantLoading] = useState(false);
   const [merchantPrepare, setMerchantPrepare] = useState<any | null>(null);
   const [merchantQrVisible, setMerchantQrVisible] = useState(false);
   const [merchantTab, setMerchantTab] = useState<MerchantTab>('payments');
+  const [merchantMenuVisible, setMerchantMenuVisible] = useState(false);
   const [merchantReservations, setMerchantReservations] = useState<any[]>([]);
   const [merchantReservationsLoading, setMerchantReservationsLoading] = useState(false);
+  const [merchantReservationQuery, setMerchantReservationQuery] = useState('');
+  const [merchantDemand, setMerchantDemand] = useState<any | null>(null);
+  const [merchantDemandLoading, setMerchantDemandLoading] = useState(false);
+  const [lastDemandLevel, setLastDemandLevel] = useState<string | null>(null);
+  const [demandActivityType, setDemandActivityType] = useState('ristorazione');
+  const [window1Label, setWindow1Label] = useState('Colazione');
+  const [window1Start, setWindow1Start] = useState('07:00');
+  const [window1End, setWindow1End] = useState('10:30');
+  const [window2Label, setWindow2Label] = useState('Pranzo');
+  const [window2Start, setWindow2Start] = useState('12:00');
+  const [window2End, setWindow2End] = useState('15:00');
+  const [window3Label, setWindow3Label] = useState('Cena');
+  const [window3Start, setWindow3Start] = useState('19:00');
+  const [window3End, setWindow3End] = useState('22:30');
   const [confirmModalVisible, setConfirmModalVisible] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any | null>(null);
   const [flashOn, setFlashOn] = useState(false);
@@ -183,6 +203,57 @@ function App(): JSX.Element {
     }
   }
 
+  async function loadMerchantDemand() {
+    const merchantId = Number(merchantIdInput);
+    if (!Number.isFinite(merchantId)) return;
+    setMerchantDemandLoading(true);
+    try {
+      const res = await getMerchantDemand(merchantId);
+      setMerchantDemand(res);
+      setDemandActivityType(res.activityType || 'ristorazione');
+      if (res.windows?.[0]) {
+        setWindow1Label(res.windows[0].label);
+        setWindow1Start(res.windows[0].start);
+        setWindow1End(res.windows[0].end);
+      }
+      if (res.windows?.[1]) {
+        setWindow2Label(res.windows[1].label);
+        setWindow2Start(res.windows[1].start);
+        setWindow2End(res.windows[1].end);
+      }
+      if (res.windows?.[2]) {
+        setWindow3Label(res.windows[2].label);
+        setWindow3Start(res.windows[2].start);
+        setWindow3End(res.windows[2].end);
+      }
+    } catch (e) {
+      console.warn('[merchant] demand error', e);
+    } finally {
+      setMerchantDemandLoading(false);
+    }
+  }
+
+  function demandLevelFromPercent(pct: number) {
+    if (pct >= 70) return 'HIGH';
+    if (pct >= 40) return 'MEDIUM';
+    return 'LOW';
+  }
+
+  useEffect(() => {
+    if (role !== 'merchant' || !merchantDemand?.windows?.length) return;
+    const top = merchantDemand.windows.reduce((a: any, b: any) => (b.demandPercent > a.demandPercent ? b : a));
+    const level = demandLevelFromPercent(top.demandPercent);
+    if (level === 'HIGH' && lastDemandLevel !== 'HIGH') {
+      Alert.alert('Domanda alta', `È il momento giusto per lanciare un’offerta: ${top.label} (${top.demandPercent}%)`);
+    }
+    setLastDemandLevel(level);
+  }, [merchantDemand, role]);
+
+  useEffect(() => {
+    if (role !== 'merchant' || merchantTab !== 'plan') return;
+    setMerchantPlanDraft(merchantPlan);
+  }, [role, merchantTab, merchantPlan]);
+
   const device = useCameraDevice('back');
   const codeScanner = useCodeScanner({
     codeTypes: ['qr'],
@@ -255,6 +326,14 @@ function App(): JSX.Element {
   useEffect(() => {
     if (role !== 'merchant') return;
     if (merchantTab === 'reservations') loadMerchantReservations();
+  }, [role, merchantTab]);
+
+  useEffect(() => {
+    if (role !== 'merchant') return;
+    if (merchantTab !== 'demand') return;
+    loadMerchantDemand();
+    const t = setInterval(() => loadMerchantDemand(), 5 * 60 * 1000);
+    return () => clearInterval(t);
   }, [role, merchantTab]);
 
   useEffect(() => {
@@ -963,28 +1042,113 @@ function App(): JSX.Element {
           standardPrice: merchantPrepare.standardPrice ?? null,
         })
       : null;
+    const merchantMenuItems: { key: MerchantTab; label: string }[] = [
+      { key: 'profile', label: 'Profilo' },
+      { key: 'demand', label: 'Domanda in corso' },
+      { key: 'offers', label: 'Lancia offerta' },
+      { key: 'reservations', label: 'Prenotazioni' },
+      { key: 'payments', label: 'Incassi e QR' },
+      { key: 'plan', label: 'Piano esercente' },
+    ];
+    const planDescriptions: Record<MerchantPlan, string[]> = {
+      BASIC: [
+        'Sei nel sistema e presente tra gli esercizi convenzionati.',
+        'Puoi accettare pagamenti dagli utenti PoPay.',
+        'Puoi visualizzare la domanda in corso che analizza le richieste di mercato.',
+        'Costo della transazione: 2%.',
+      ],
+      RECOMMENDED: [
+        'Sei nel sistema e presente tra gli esercizi convenzionati.',
+        'Gli host della tua zona possono selezionarti come raccomandato.',
+        'Puoi essere preferito dai clienti rispetto ai competitor.',
+        'Puoi visualizzare la domanda in corso che analizza le richieste di mercato.',
+        'Costo della transazione: 3%.',
+      ],
+      OFFERS: [
+        'Sei nel sistema e presente tra gli esercizi convenzionati.',
+        'Gli host della tua zona possono selezionarti come raccomandato.',
+        'Puoi proporre offerte mirate per prodotto e orari.',
+        'Sfrutti la domanda in corso che analizza le richieste di mercato.',
+        'Costo della transazione: 4%.',
+      ],
+    };
+
+    const merchantTabLabel =
+      merchantMenuItems.find((item) => item.key === merchantTab)?.label ?? 'PoPay Merchant';
+
+    const recommendedHosts: string[] = [];
+
     return (
       <SafeAreaView style={[backgroundStyle,{flex:1}]}>
         <ScrollView contentContainerStyle={styles.tabContent}>
-          <Text style={styles.title}>PoPay Merchant</Text>
-          <View style={styles.merchantTabBar}>
+          <View style={styles.merchantHeader}>
+            <View>
+              <Text style={styles.title}>PoPay Merchant</Text>
+              <Text style={styles.subtitle}>{merchantTabLabel}</Text>
+            </View>
             <TouchableOpacity
-              style={[styles.merchantTab, merchantTab === 'payments' && styles.merchantTabActive]}
-              onPress={() => setMerchantTab('payments')}>
-              <Text style={[styles.merchantTabText, merchantTab === 'payments' && styles.merchantTabTextActive]}>Incassi & QR</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.merchantTab, merchantTab === 'offers' && styles.merchantTabActive]}
-              onPress={() => setMerchantTab('offers')}>
-              <Text style={[styles.merchantTabText, merchantTab === 'offers' && styles.merchantTabTextActive]}>Lancia Offerta</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.merchantTab, merchantTab === 'reservations' && styles.merchantTabActive]}
-              onPress={() => setMerchantTab('reservations')}>
-              <Text style={[styles.merchantTabText, merchantTab === 'reservations' && styles.merchantTabTextActive]}>Prenotazioni</Text>
+              style={styles.menuBtn}
+              onPress={() => setMerchantMenuVisible(true)}>
+              <Text style={styles.menuBtnText}>Menu</Text>
             </TouchableOpacity>
           </View>
-          {merchantTab === 'payments' ? (
+          {merchantTab === 'profile' ? (
+            <>
+              <Text style={styles.subtitle}>Profilo esercente</Text>
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Anagrafica</Text>
+                <View style={styles.profileRow}>
+                  <Text style={styles.cardMeta}>Ragione sociale</Text>
+                  <Text style={styles.cardMeta}>—</Text>
+                </View>
+                <View style={styles.profileRow}>
+                  <Text style={styles.cardMeta}>Nome attività</Text>
+                  <Text style={styles.cardMeta}>—</Text>
+                </View>
+                <View style={styles.profileRow}>
+                  <Text style={styles.cardMeta}>P. IVA</Text>
+                  <Text style={styles.cardMeta}>—</Text>
+                </View>
+                <View style={styles.profileRow}>
+                  <Text style={styles.cardMeta}>Indirizzo</Text>
+                  <Text style={styles.cardMeta}>—</Text>
+                </View>
+                <View style={styles.profileRow}>
+                  <Text style={styles.cardMeta}>Città</Text>
+                  <Text style={styles.cardMeta}>{offerCity || '—'}</Text>
+                </View>
+                <View style={styles.profileRow}>
+                  <Text style={styles.cardMeta}>Merchant ID</Text>
+                  <Text style={styles.cardMeta}>{merchantIdInput}</Text>
+                </View>
+              </View>
+
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Piano attivo</Text>
+                <Text style={styles.cardMeta}>{merchantPlan}</Text>
+                <View style={styles.planDetail}>
+                  {planDescriptions[merchantPlan].map((line, idx) => (
+                    <Text key={`plan-${idx}`} style={styles.cardMeta}>{line}</Text>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Esercizio consigliato da</Text>
+                {recommendedHosts.length === 0 ? (
+                  <Text style={styles.cardMeta}>Nessun host ha ancora consigliato questo esercizio.</Text>
+                ) : (
+                  <View style={styles.recoList}>
+                    {recommendedHosts.map((host) => (
+                      <View key={host} style={styles.recoItem}>
+                        <Text style={styles.cardMeta}>{host}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            </>
+          ) : merchantTab === 'payments' ? (
             <>
           <Text style={styles.subtitle}>Inserisci importo lordo (prezzo di listino)</Text>
 
@@ -1004,20 +1168,6 @@ function App(): JSX.Element {
               keyboardType="decimal-pad"
               placeholder="0.00"
             />
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.cardMeta}>Piano esercente</Text>
-            <View style={styles.row}>
-              {(['BASIC','RECOMMENDED','OFFERS'] as MerchantPlan[]).map((p) => (
-                <TouchableOpacity
-                  key={p}
-                  style={[styles.secondaryBtn, merchantPlan === p ? styles.planActive : null]}
-                  onPress={() => setMerchantPlan(p)}>
-                  <Text style={styles.secondaryBtnText}>{p}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
           </View>
 
           <View style={styles.card}>
@@ -1071,6 +1221,10 @@ function App(): JSX.Element {
           ) : merchantTab === 'offers' ? (
             <>
               <Text style={styles.subtitle}>Crea un’offerta che apparirà all’utente</Text>
+              <View style={styles.gatedWrap}>
+                <View
+                  pointerEvents={merchantPlan === 'OFFERS' ? 'auto' : 'none'}
+                  style={merchantPlan !== 'OFFERS' ? styles.gatedContent : null}>
               <View style={styles.card}>
                 <Text style={styles.cardMeta}>Titolo</Text>
                 <TextInput
@@ -1261,31 +1415,68 @@ function App(): JSX.Element {
                   <Text style={styles.cardMeta}>Quantità: {offerResult.quantityAvailable ?? '—'}</Text>
                 </View>
               ) : null}
+                </View>
+                {merchantPlan !== 'OFFERS' ? (
+                  <View style={styles.gatedOverlay}>
+                    <Text style={styles.gatedTitle}>Vuoi lanciare la tua offerta?</Text>
+                    <Text style={styles.cardMeta}>Passa al piano OFFERS per attivare questa funzione.</Text>
+                    <TouchableOpacity style={styles.primaryBtn} onPress={() => setMerchantTab('plan')}>
+                      <Text style={styles.primaryBtnText}>Vai a Piano esercente</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
             </>
-          ) : (
+          ) : merchantTab === 'reservations' ? (
             <>
               <Text style={styles.subtitle}>Prenotazioni ricevute</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Cerca per nome o ID prenotazione"
+                value={merchantReservationQuery}
+                onChangeText={setMerchantReservationQuery}
+              />
               {merchantReservationsLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
-              {merchantReservations.map((r) => {
+              {merchantReservations
+                .filter((r) => {
+                  const q = merchantReservationQuery.trim().toLowerCase();
+                  if (!q) return true;
+                  const idMatch = String(r.id).includes(q);
+                  const nameMatch = (r.user?.fullName || '').toLowerCase().includes(q);
+                  return idMatch || nameMatch;
+                })
+                .map((r) => {
                 const start = r.offer?.startTime ? new Date(r.offer.startTime) : null;
                 const isLate = start ? Date.now() > start.getTime() + 15 * 60 * 1000 : false;
                 const shouldFlash = isLate && r.depositStatus === 'held';
                 return (
-                <TouchableOpacity
-                  key={r.id}
-                  style={[
-                    styles.card,
-                    shouldFlash && flashOn ? styles.flashCard : null,
-                    shouldFlash && !flashOn ? styles.flashCardAlt : null,
-                  ]}
-                  onPress={() => {
-                    if (shouldFlash) {
-                      setSelectedReservation(r);
-                      setConfirmModalVisible(true);
-                    }
-                  }}>
-                  <Text style={styles.cardTitle}>Prenotazione #{r.id}</Text>
-                  <Text style={styles.cardMeta}>Cliente: {r.user?.fullName || '—'}</Text>
+                  <TouchableOpacity
+                    key={r.id}
+                    style={[
+                      styles.card,
+                      shouldFlash && flashOn ? styles.flashCard : null,
+                      shouldFlash && !flashOn ? styles.flashCardAlt : null,
+                    ]}
+                    onPress={() => {
+                      if (shouldFlash) {
+                        setSelectedReservation(r);
+                        setConfirmModalVisible(true);
+                      }
+                    }}>
+                    <Text style={styles.cardTitle}>Prenotazione PR-{String(r.id).padStart(4, '0')}</Text>
+                    <Text style={styles.cardMeta}>
+                      Cliente: {r.user?.fullName || '—'}
+                      {r.user?.phone ? ` • ****${r.user.phone.slice(-4)}` : ''}
+                    </Text>
+                    {r.depositStatus === 'confirmed' ? (
+                      <View style={styles.statusBadgeGreen}><Text style={styles.statusBadgeText}>Presente</Text></View>
+                    ) : null}
+                    {r.depositStatus === 'forfeited' ? (
+                      <View style={styles.statusBadgeRed}><Text style={styles.statusBadgeTextRed}>Assente</Text></View>
+                    ) : null}
+                    {r.depositStatus === 'held' ? (
+                      <View style={styles.statusBadgeGray}><Text style={styles.statusBadgeTextGray}>In attesa</Text></View>
+                    ) : null}
                   <Text style={styles.cardMeta}>Cauzione: {r.depositStatus || '—'} • € {r.depositAmount || '0,00'}</Text>
                   <Text style={styles.cardMeta}>Offerta: {r.offer?.title || '—'}</Text>
                   <Text style={styles.cardMeta}>Prezzo per persona: € {r.offer?.price || '0,00'}</Text>
@@ -1357,8 +1548,153 @@ function App(): JSX.Element {
                 </View>
               </Modal>
             </>
+          ) : merchantTab === 'demand' ? (
+            <>
+              <Text style={styles.subtitle}>Domanda in corso</Text>
+              {merchantDemandLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              {merchantDemand ? (
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>Domanda in corso</Text>
+                  <Text style={styles.cardMeta}>Presenze attive: {merchantDemand.activeUsers}</Text>
+                  {merchantDemand.windows?.length ? (() => {
+                    const top = merchantDemand.windows.reduce((a: any, b: any) => (b.demandPercent > a.demandPercent ? b : a));
+                    const level = demandLevelFromPercent(top.demandPercent);
+                    return (
+                      <View style={styles.demandHero}>
+                        <View style={[styles.demandBadge, level === 'HIGH' ? styles.badgeGreen : level === 'MEDIUM' ? styles.badgeYellow : styles.badgeRed]}>
+                          <Text style={styles.badgeText}>{level === 'HIGH' ? 'ALTA' : level === 'MEDIUM' ? 'MEDIA' : 'BASSA'}</Text>
+                        </View>
+                        <Text style={styles.demandTitle}>
+                          {level === 'HIGH' ? 'È il momento giusto per lanciare un’offerta' : 'Meglio aspettare'}
+                        </Text>
+                        <Text style={styles.cardMeta}>Suggerimento: {top.label} ({top.demandPercent}%)</Text>
+                        <TouchableOpacity style={styles.primaryBtn} onPress={() => setMerchantTab('offers')}>
+                          <Text style={styles.primaryBtnText}>Crea offerta</Text>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })() : null}
+                  {merchantDemand.windows?.map((w: any) => (
+                    <View key={w.label} style={styles.demandRow}>
+                      <Text style={styles.cardMeta}>{w.label} ({w.start}-{w.end})</Text>
+                      <View style={styles.demandBar}>
+                        <View style={[styles.demandBarFill, { width: `${w.demandPercent}%` }]} />
+                      </View>
+                      <Text style={styles.demandValue}>{w.demandPercent}%</Text>
+                    </View>
+                  ))}
+                  <Text style={styles.cardMeta}>Aggiornato: {new Date(merchantDemand.updatedAt).toLocaleTimeString()}</Text>
+                </View>
+              ) : null}
+              <View style={styles.card}>
+                <Text style={styles.cardMeta}>Tipo attività</Text>
+                <TextInput style={styles.input} value={demandActivityType} onChangeText={setDemandActivityType} />
+                <Text style={styles.cardMeta}>Finestra 1</Text>
+                <View style={styles.row}>
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window1Label} onChangeText={setWindow1Label} placeholder="Label" />
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window1Start} onChangeText={setWindow1Start} placeholder="HH:MM" />
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window1End} onChangeText={setWindow1End} placeholder="HH:MM" />
+                </View>
+                <Text style={styles.cardMeta}>Finestra 2</Text>
+                <View style={styles.row}>
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window2Label} onChangeText={setWindow2Label} placeholder="Label" />
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window2Start} onChangeText={setWindow2Start} placeholder="HH:MM" />
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window2End} onChangeText={setWindow2End} placeholder="HH:MM" />
+                </View>
+                <Text style={styles.cardMeta}>Finestra 3</Text>
+                <View style={styles.row}>
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window3Label} onChangeText={setWindow3Label} placeholder="Label" />
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window3Start} onChangeText={setWindow3Start} placeholder="HH:MM" />
+                  <TextInput style={[styles.input, styles.inputHalf]} value={window3End} onChangeText={setWindow3End} placeholder="HH:MM" />
+                </View>
+                <TouchableOpacity
+                  style={styles.primaryBtn}
+                  onPress={async () => {
+                    const merchantId = Number(merchantIdInput);
+                    if (!Number.isFinite(merchantId)) return;
+                    await updateMerchantDemandWindows(merchantId, {
+                      activityType: demandActivityType,
+                      window1: { label: window1Label, start: window1Start, end: window1End },
+                      window2: { label: window2Label, start: window2Start, end: window2End },
+                      window3: { label: window3Label, start: window3Start, end: window3End },
+                    });
+                    loadMerchantDemand();
+                  }}>
+                  <Text style={styles.primaryBtnText}>Salva finestre</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          ) : (
+            <>
+              <Text style={styles.subtitle}>Piano esercente</Text>
+              <View style={styles.card}>
+                <Text style={styles.cardMeta}>Seleziona il piano contrattuale.</Text>
+                <Text style={styles.cardMeta}>Piano attivo: {merchantPlan}</Text>
+                <View style={styles.row}>
+                  {(['BASIC','RECOMMENDED','OFFERS'] as MerchantPlan[]).map((p) => (
+                    <TouchableOpacity
+                      key={p}
+                      style={[styles.secondaryBtn, merchantPlanDraft === p ? styles.planActive : null]}
+                      onPress={() => setMerchantPlanDraft(p)}>
+                      <Text style={styles.secondaryBtnText}>{p}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <View style={styles.planDetail}>
+                  {planDescriptions[merchantPlanDraft].map((line, idx) => (
+                    <Text key={`${merchantPlanDraft}-${idx}`} style={styles.cardMeta}>{line}</Text>
+                  ))}
+                </View>
+                <TouchableOpacity
+                  style={styles.primaryBtn}
+                  onPress={async () => {
+                    const merchantId = Number(merchantIdInput);
+                    if (!Number.isFinite(merchantId)) {
+                      Alert.alert('Errore', 'Merchant ID non valido');
+                      return;
+                    }
+                    setMerchantPlanSaving(true);
+                    try {
+                      const res = await updateMerchantPlan(merchantId, merchantPlanDraft);
+                      setMerchantPlan(res.plan as MerchantPlan);
+                      Alert.alert('Piano aggiornato', 'Cambio completato. Riceverai una notifica ed email di conferma.');
+                    } catch (e: any) {
+                      Alert.alert('Errore', e?.body?.error || e?.message || 'Errore aggiornamento piano');
+                    } finally {
+                      setMerchantPlanSaving(false);
+                    }
+                  }}>
+                  <Text style={styles.primaryBtnText}>Applica piano</Text>
+                </TouchableOpacity>
+                {merchantPlanSaving ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              </View>
+            </>
           )}
         </ScrollView>
+        <Modal visible={merchantMenuVisible} transparent animationType="slide" onRequestClose={() => setMerchantMenuVisible(false)}>
+          <View style={styles.drawerOverlay}>
+            <TouchableOpacity style={styles.drawerBackdrop} activeOpacity={1} onPress={() => setMerchantMenuVisible(false)} />
+            <View style={styles.drawer}>
+              <View style={styles.drawerHeader}>
+                <Text style={styles.title}>Menu</Text>
+                <TouchableOpacity style={styles.drawerClose} onPress={() => setMerchantMenuVisible(false)}>
+                  <Text style={styles.drawerCloseText}>Chiudi</Text>
+                </TouchableOpacity>
+              </View>
+              {merchantMenuItems.map((item) => (
+                <TouchableOpacity
+                  key={item.key}
+                  style={[styles.sheetItem, merchantTab === item.key ? styles.sheetItemActive : null]}
+                  onPress={() => {
+                    setMerchantTab(item.key);
+                    setMerchantMenuVisible(false);
+                  }}>
+                  <Text style={[styles.sheetItemText, merchantTab === item.key ? styles.sheetItemTextActive : null]}>{item.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </Modal>
         {showStartDatePicker ? (
           <DateTimePicker
             value={new Date(`${offerStartDate}T${offerStartTime}:00`)}
@@ -1583,6 +1919,71 @@ const styles = StyleSheet.create({
   },
   confirmBtn: { flex: 1, marginRight: 8, alignItems: 'center' },
   denyBtn: { flex: 1, alignItems: 'center' },
+  demandRow: {
+    marginTop: 8,
+  },
+  demandBar: {
+    height: 8,
+    backgroundColor: '#E9EEF2',
+    borderRadius: 999,
+    overflow: 'hidden',
+    marginTop: 4,
+  },
+  demandBarFill: {
+    height: 8,
+    backgroundColor: THEME.coral,
+  },
+  demandValue: {
+    fontSize: 11,
+    color: THEME.inkSoft,
+    marginTop: 2,
+  },
+  demandHero: {
+    marginTop: 8,
+    marginBottom: 10,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#FFF2E9',
+  },
+  demandBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 999,
+    marginBottom: 6,
+  },
+  badgeGreen: { backgroundColor: '#2E7D32' },
+  badgeYellow: { backgroundColor: '#F9A825' },
+  badgeRed: { backgroundColor: '#C62828' },
+  badgeText: { fontSize: 12, fontWeight: '800', color: '#fff', letterSpacing: 0.5 },
+  demandTitle: { fontSize: 14, fontWeight: '700', color: THEME.ink, marginBottom: 4 },
+  statusBadgeGreen: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#E6F4EA',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    marginBottom: 6,
+  },
+  statusBadgeRed: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#FDECEC',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    marginBottom: 6,
+  },
+  statusBadgeText: { fontSize: 11, fontWeight: '700', color: '#1B5E20' },
+  statusBadgeTextRed: { fontSize: 11, fontWeight: '700', color: '#B00020' },
+  statusBadgeGray: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#EEF1F4',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    marginBottom: 6,
+  },
+  statusBadgeTextGray: { fontSize: 11, fontWeight: '700', color: '#5B6B78' },
   row: {
     flexDirection: 'row',
     gap: 8,
@@ -1639,6 +2040,136 @@ const styles = StyleSheet.create({
   },
   planActive: {
     backgroundColor: THEME.bgAlt,
+  },
+  planDetail: {
+    marginTop: 8,
+  },
+  gatedWrap: {
+    position: 'relative',
+  },
+  gatedContent: {
+    opacity: 0.6,
+  },
+  gatedOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,249,241,0.45)',
+    borderRadius: 14,
+  },
+  gatedTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: THEME.ink,
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  profileRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 8,
+  },
+  recoList: {
+    maxHeight: 140,
+    marginTop: 8,
+  },
+  recoItem: {
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.border,
+  },
+  merchantHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  menuBtn: {
+    backgroundColor: THEME.coral,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+  },
+  menuBtnText: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  menuList: {
+    gap: 10,
+  },
+  drawerOverlay: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(15,42,61,0.35)',
+  },
+  drawerBackdrop: {
+    flex: 1,
+  },
+  drawer: {
+    width: '78%',
+    backgroundColor: THEME.bg,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 24,
+  },
+  drawerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+  },
+  drawerClose: {
+    backgroundColor: THEME.bgAlt,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: THEME.border,
+  },
+  drawerCloseText: {
+    color: THEME.ink,
+    fontWeight: '700',
+  },
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,42,61,0.35)',
+  },
+  sheet: {
+    backgroundColor: THEME.card,
+    paddingBottom: 24,
+    paddingTop: 8,
+    paddingHorizontal: 16,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+  },
+  sheetHandle: {
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: THEME.border,
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  sheetItem: {
+    paddingVertical: 12,
+  },
+  sheetItemActive: {
+    backgroundColor: THEME.bgAlt,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+  },
+  sheetItemText: {
+    color: THEME.ink,
+    fontWeight: '700',
+  },
+  sheetItemTextActive: {
+    color: THEME.coral,
   },
   merchantTabBar: {
     flexDirection: 'row',
