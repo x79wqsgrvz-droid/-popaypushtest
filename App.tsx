@@ -51,6 +51,7 @@ import {
   getMerchantDemand,
   updateMerchantDemandWindows,
   updateMerchantPlan,
+  getMerchantNotifications,
   registerPushToken,
   getNotificationCounts,
   type FlashOfferListItem,
@@ -106,6 +107,8 @@ function App(): JSX.Element {
   const [merchantPlan, setMerchantPlan] = useState<MerchantPlan>('BASIC');
   const [merchantPlanDraft, setMerchantPlanDraft] = useState<MerchantPlan>('BASIC');
   const [merchantPlanSaving, setMerchantPlanSaving] = useState(false);
+  const [merchantNotifications, setMerchantNotifications] = useState<any[]>([]);
+  const [merchantNotificationsLoading, setMerchantNotificationsLoading] = useState(false);
   const [merchantLoading, setMerchantLoading] = useState(false);
   const [merchantPrepare, setMerchantPrepare] = useState<any | null>(null);
   const [merchantQrVisible, setMerchantQrVisible] = useState(false);
@@ -335,6 +338,26 @@ function App(): JSX.Element {
     const t = setInterval(() => loadMerchantDemand(), 5 * 60 * 1000);
     return () => clearInterval(t);
   }, [role, merchantTab]);
+
+  useEffect(() => {
+    if (role !== 'merchant') return;
+    if (merchantTab !== 'profile') return;
+    loadMerchantNotifications();
+  }, [role, merchantTab]);
+
+  async function loadMerchantNotifications() {
+    const merchantId = Number(merchantIdInput);
+    if (!Number.isFinite(merchantId)) return;
+    setMerchantNotificationsLoading(true);
+    try {
+      const res = await getMerchantNotifications(merchantId);
+      setMerchantNotifications(res.items || []);
+    } catch (e) {
+      console.warn('[merchant] notifications error', e);
+    } finally {
+      setMerchantNotificationsLoading(false);
+    }
+  }
 
   useEffect(() => {
     if (role !== 'merchant' || merchantTab !== 'reservations') return;
@@ -1142,6 +1165,25 @@ function App(): JSX.Element {
                     {recommendedHosts.map((host) => (
                       <View key={host} style={styles.recoItem}>
                         <Text style={styles.cardMeta}>{host}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>Notifiche</Text>
+                {merchantNotificationsLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+                {merchantNotifications.length === 0 ? (
+                  <Text style={styles.cardMeta}>Nessuna notifica disponibile.</Text>
+                ) : (
+                  <View style={styles.recoList}>
+                    {merchantNotifications.map((n) => (
+                      <View key={n.id} style={styles.recoItem}>
+                        <Text style={styles.cardMeta}>{n.title}</Text>
+                        <Text style={styles.cardMeta}>{n.body}</Text>
+                        <Text style={styles.cardMeta}>
+                          {new Date(n.created_at).toLocaleString()}
+                        </Text>
                       </View>
                     ))}
                   </View>

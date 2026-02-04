@@ -252,6 +252,21 @@ export async function updateMerchantPlan(
   });
 }
 
+export type MerchantNotification = {
+  id: number;
+  type: string;
+  title: string;
+  body: string;
+  created_at: string;
+  read_at?: string | null;
+};
+
+export async function getMerchantNotifications(businessId: number) {
+  return request<{ count: number; items: MerchantNotification[] }>(
+    `/api/merchants/${businessId}/notifications`
+  );
+}
+
 export async function createFlashOffer(payload: {
   merchantId: number;
   title: string;
