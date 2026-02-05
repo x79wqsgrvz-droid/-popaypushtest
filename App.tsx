@@ -59,6 +59,7 @@ import {
   merchantVerifyEmail,
   merchantLogin,
   merchantVerifyOtp,
+  merchantDeleteAccount,
   registerPushToken,
   getNotificationCounts,
   type FlashOfferListItem,
@@ -238,6 +239,9 @@ function App(): JSX.Element {
   const [registerAddress, setRegisterAddress] = useState('');
   const [registerCity, setRegisterCity] = useState('');
   const [registerPassword, setRegisterPassword] = useState('');
+  const [deleteAccountVisible, setDeleteAccountVisible] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const now = roundTo5(new Date());
   const [offerStartDate, setOfferStartDate] = useState(now.toISOString().slice(0,10));
   const [offerStartTime, setOfferStartTime] = useState(now.toTimeString().slice(0,5));
@@ -2355,6 +2359,67 @@ function App(): JSX.Element {
                   <Text style={[styles.sheetItemText, merchantTab === item.key ? styles.sheetItemTextActive : null]}>{item.label}</Text>
                 </TouchableOpacity>
               ))}
+              <TouchableOpacity
+                style={styles.sheetItem}
+                onPress={() => {
+                  setMerchantMenuVisible(false);
+                  setDeleteAccountVisible(true);
+                }}>
+                <Text style={[styles.sheetItemText, styles.deleteText]}>Cancella account</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={deleteAccountVisible} transparent animationType="fade">
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.cardTitle}>Cancella account</Text>
+              <Text style={styles.cardMeta}>
+                Questa operazione elimina solo l’account di accesso. I dati dell’attività restano.
+              </Text>
+              <Text style={styles.cardMeta}>Inserisci la password</Text>
+              <TextInput
+                style={styles.input}
+                value={deletePassword}
+                onChangeText={setDeletePassword}
+                placeholder="Password"
+                secureTextEntry
+              />
+              <Text style={styles.cardMeta}>Digita "ELIMINA" per confermare</Text>
+              <TextInput
+                style={styles.input}
+                value={deleteConfirmText}
+                onChangeText={setDeleteConfirmText}
+                placeholder="ELIMINA"
+                autoCapitalize="characters"
+              />
+              <View style={styles.row}>
+                <TouchableOpacity style={styles.secondaryBtn} onPress={() => setDeleteAccountVisible(false)}>
+                  <Text style={styles.secondaryBtnText}>Annulla</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.primaryBtn, styles.denyBtn]}
+                  onPress={async () => {
+                    try {
+                      await merchantDeleteAccount({
+                        email: merchantAuthEmail,
+                        password: deletePassword,
+                        confirm: deleteConfirmText,
+                      });
+                      setDeleteAccountVisible(false);
+                      setMerchantAuthed(false);
+                      setRole(null);
+                      setMerchantAuthStep('login');
+                      setDeletePassword('');
+                      setDeleteConfirmText('');
+                      Alert.alert('Account eliminato', 'L’account è stato cancellato.');
+                    } catch (e: any) {
+                      Alert.alert('Errore', e?.body?.error || e?.message || 'Errore cancellazione account');
+                    }
+                  }}>
+                  <Text style={styles.primaryBtnText}>Elimina</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </Modal>
@@ -3008,6 +3073,9 @@ const styles = StyleSheet.create({
   },
   sheetItemTextActive: {
     color: THEME.coral,
+  },
+  deleteText: {
+    color: '#B00020',
   },
   merchantTabBar: {
     flexDirection: 'row',

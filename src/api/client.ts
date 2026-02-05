@@ -232,6 +232,7 @@ export async function updateMerchantDemandWindows(
     window1?: { label?: string; start?: string; end?: string };
     window2?: { label?: string; start?: string; end?: string };
     window3?: { label?: string; start?: string; end?: string };
+    windows?: { label: string; start: string; end: string }[];
   }
 ) {
   return request<{ ok: true; business: any }>(`/api/merchants/${businessId}/demand-windows`, {
@@ -275,6 +276,55 @@ export async function markMerchantNotificationRead(
     `/api/merchants/${businessId}/notifications/${notificationId}/read`,
     { method: "PATCH" }
   );
+}
+
+export async function merchantRegister(payload: {
+  email: string;
+  password: string;
+  legalName: string;
+  businessName: string;
+  phone: string;
+  vatNumber: string;
+  address: string;
+  city: string;
+}) {
+  return request<{ ok: true; businessId: number }>(`/api/merchants/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function merchantVerifyEmail(payload: { email: string; code: string }) {
+  return request<{ ok: true; verified: boolean }>(`/api/merchants/verify-email`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function merchantLogin(payload: { email: string; password: string }) {
+  return request<{ ok: true; requiresOtp: boolean }>(`/api/merchants/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function merchantVerifyOtp(payload: { email: string; code: string }) {
+  return request<{ ok: true; businessId: number; token: string }>(`/api/merchants/verify-otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function merchantDeleteAccount(payload: { email: string; password: string; confirm: string }) {
+  return request<{ ok: true }>(`/api/merchants/delete-account`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function createFlashOffer(payload: {
