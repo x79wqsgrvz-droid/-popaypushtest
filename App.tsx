@@ -55,6 +55,10 @@ import {
   updateMerchantPlan,
   getMerchantNotifications,
   markMerchantNotificationRead,
+  merchantRegister,
+  merchantVerifyEmail,
+  merchantLogin,
+  merchantVerifyOtp,
   registerPushToken,
   getNotificationCounts,
   type FlashOfferListItem,
@@ -81,6 +85,64 @@ const THEME = {
   sage: '#7FA89B',
   border: '#E8DED2',
 };
+const ACTIVITY_TYPES = [
+  'Bar',
+  'Caffetteria',
+  'Pasticceria',
+  'Gelateria',
+  'Ristorante',
+  'Pizzeria',
+  'Trattoria',
+  'Osteria',
+  'Pub / Birreria',
+  'Cocktail bar',
+  'Wine bar / Enoteca',
+  'Lido balneare',
+  'Stabilimento termale / Spa',
+  'Hotel / B&B',
+  'Agriturismo',
+  'Street food',
+  'Fast food',
+  'Negozio souvenir',
+  'Negozio alimentari / Market',
+  'Panificio / Forno',
+  'Gastronomia',
+  'Intrattenimento / Eventi',
+];
+const STRENGTHS_BY_ACTIVITY: Record<string, string[]> = {
+  'Bar': ['Colazione', 'Caffè speciali', 'Cornetti e pasticceria', 'Aperitivo', 'Panini / snack', 'Gelato'],
+  'Caffetteria': ['Colazione', 'Caffè speciali', 'Pasticceria fresca', 'Aperitivo', 'Snack'],
+  'Pasticceria': ['Colazione', 'Torte artigianali', 'Semifreddi', 'Cioccolateria', 'Dolci da forno'],
+  'Gelateria': ['Gelato artigianale', 'Semifreddi', 'Crêpes', 'Granite', 'Gusti speciali'],
+  'Ristorante': ['Pranzo', 'Cena', 'Menu degustazione', 'Cucina tipica', 'Pesce'],
+  'Pizzeria': ['Pizza classica', 'Pizza gourmet', 'Pizza al taglio', 'Fritti'],
+  'Trattoria': ['Pranzo', 'Cena', 'Cucina tipica', 'Menu fisso'],
+  'Osteria': ['Pranzo', 'Cena', 'Vini al calice', 'Taglieri'],
+  'Pub / Birreria': ['Aperitivo', 'Birre artigianali', 'Panini / burger', 'Eventi sportivi'],
+  'Cocktail bar': ['Aperitivo', 'Cocktail', 'Signature drink', 'After dinner'],
+  'Wine bar / Enoteca': ['Vini al calice', 'Degustazioni', 'Taglieri', 'Aperitivo'],
+  'Lido balneare': ['Colazione', 'Pranzo', 'Aperitivo', 'Noleggio ombrelloni', 'Eventi'],
+  'Stabilimento termale / Spa': ['Relax', 'Trattamenti', 'Percorsi benessere', 'Day spa'],
+  'Hotel / B&B': ['Colazione', 'Pranzo', 'Cena', 'Experience', 'Spa / benessere'],
+  'Agriturismo': ['Colazione', 'Pranzo', 'Cena', 'Prodotti tipici', 'Degustazioni'],
+  'Street food': ['Pranzo veloce', 'Cena veloce', 'Take away', 'Specialità locali'],
+  'Fast food': ['Pranzo veloce', 'Cena veloce', 'Take away', 'Family menu'],
+  'Negozio souvenir': ['Gadget locali', 'Artigianato', 'Prodotti tipici'],
+  'Negozio alimentari / Market': ['Prodotti locali', 'Take away', 'Convenienza'],
+  'Panificio / Forno': ['Pane fresco', 'Focacce', 'Pasticceria da forno', 'Snack'],
+  'Gastronomia': ['Piatti pronti', 'Cucina tipica', 'Take away', 'Prodotti locali'],
+  'Intrattenimento / Eventi': ['Live music', 'Spettacoli', 'Eventi speciali', 'Night life'],
+};
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTE_OPTIONS = ['00', '15', '30', '45'];
+function mapActivityType(raw: string | null | undefined) {
+  const v = String(raw || '').toLowerCase();
+  if (!v) return null;
+  if (v === 'ristorazione') return 'Ristorante';
+  if (v === 'lido') return 'Lido balneare';
+  if (v === 'intrattenimento') return 'Intrattenimento / Eventi';
+  return raw as string;
+}
 type Role = 'client' | 'merchant' | 'host' | null;
 type MerchantPlan = 'BASIC' | 'RECOMMENDED' | 'OFFERS';
 const MERCHANT_DISCOUNT_PCT = 10;
@@ -89,7 +151,7 @@ const MERCHANT_FEE_BY_PLAN: Record<MerchantPlan, number> = {
   RECOMMENDED: 3,
   OFFERS: 4,
 };
-type MerchantTab = 'profile' | 'payments' | 'offers' | 'reservations' | 'demand' | 'plan';
+type MerchantTab = 'profile' | 'commercial' | 'payments' | 'offers' | 'reservations' | 'demand' | 'plan';
 type TabKey = 'offers' | 'bookings' | 'wallet' | 'profile';
 type BookingView = Reservation & {
   offerTitle?: string | null;
@@ -146,6 +208,13 @@ function App(): JSX.Element {
   const [window3Label, setWindow3Label] = useState('Cena');
   const [window3Start, setWindow3Start] = useState('19:00');
   const [window3End, setWindow3End] = useState('22:30');
+  const [commercialActivityType, setCommercialActivityType] = useState<string | null>(null);
+  const [commercialWindows, setCommercialWindows] = useState<{ label: string; start: string; end: string }[]>([]);
+  const [commercialExpanded, setCommercialExpanded] = useState(false);
+  const [commercialLoading, setCommercialLoading] = useState(false);
+  const [showActivityOptions, setShowActivityOptions] = useState(false);
+  const [showStrengthOptions, setShowStrengthOptions] = useState(false);
+  const [openTimeMenu, setOpenTimeMenu] = useState<{ label: string; field: 'start' | 'end'; part: 'hour' | 'minute' } | null>(null);
   const [confirmModalVisible, setConfirmModalVisible] = useState(false);
   const [selectedReservation, setSelectedReservation] = useState<any | null>(null);
   const [flashOn, setFlashOn] = useState(false);
@@ -155,6 +224,20 @@ function App(): JSX.Element {
   const [offerStandardPriceInput, setOfferStandardPriceInput] = useState('');
   const [offerMealType, setOfferMealType] = useState('Cena');
   const [offerCity, setOfferCity] = useState(DEMO_CITY);
+  const [merchantAuthed, setMerchantAuthed] = useState(false);
+  const [merchantAuthStep, setMerchantAuthStep] = useState<'login' | 'otp' | 'register' | 'verifyEmail'>('login');
+  const [merchantAuthEmail, setMerchantAuthEmail] = useState('');
+  const [merchantAuthPassword, setMerchantAuthPassword] = useState('');
+  const [merchantAuthCode, setMerchantAuthCode] = useState('');
+  const [merchantAuthLoading, setMerchantAuthLoading] = useState(false);
+  const [registerLegalName, setRegisterLegalName] = useState('');
+  const [registerBusinessName, setRegisterBusinessName] = useState('');
+  const [registerEmail, setRegisterEmail] = useState('');
+  const [registerPhone, setRegisterPhone] = useState('');
+  const [registerVatNumber, setRegisterVatNumber] = useState('');
+  const [registerAddress, setRegisterAddress] = useState('');
+  const [registerCity, setRegisterCity] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
   const now = roundTo5(new Date());
   const [offerStartDate, setOfferStartDate] = useState(now.toISOString().slice(0,10));
   const [offerStartTime, setOfferStartTime] = useState(now.toTimeString().slice(0,5));
@@ -230,6 +313,16 @@ function App(): JSX.Element {
       const res = await getMerchantDemand(merchantId);
       setMerchantDemand(res);
       setDemandActivityType(res.activityType || 'ristorazione');
+      if (!commercialActivityType) {
+        setCommercialActivityType(mapActivityType(res.activityType));
+      }
+      if (!commercialWindows.length && res.windows?.length) {
+        setCommercialWindows(res.windows.map((w: any) => ({
+          label: w.label,
+          start: w.start,
+          end: w.end,
+        })));
+      }
       if (res.windows?.[0]) {
         setWindow1Label(res.windows[0].label);
         setWindow1Start(res.windows[0].start);
@@ -353,6 +446,12 @@ function App(): JSX.Element {
     loadMerchantDemand();
     const t = setInterval(() => loadMerchantDemand(), 5 * 60 * 1000);
     return () => clearInterval(t);
+  }, [role, merchantTab]);
+
+  useEffect(() => {
+    if (role !== 'merchant') return;
+    if (merchantTab !== 'commercial') return;
+    loadMerchantDemand();
   }, [role, merchantTab]);
 
   useEffect(() => {
@@ -1113,12 +1212,22 @@ function App(): JSX.Element {
           </Animated.Text>
           <View style={styles.roleButtons}>
             <Animated.View style={{ transform: [{ translateX: roleIntroReady ? roleBtn1X : 0 }], opacity: roleIntroReady ? roleBtn1Opacity : 1 }}>
-              <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('client')}>
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={() => {
+                  setRole('client');
+                }}>
                 <Text style={styles.primaryBtnText}>Cliente</Text>
               </TouchableOpacity>
             </Animated.View>
             <Animated.View style={{ transform: [{ translateX: roleIntroReady ? roleBtn2X : 0 }], opacity: roleIntroReady ? roleBtn2Opacity : 1 }}>
-              <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('merchant')}>
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={() => {
+                  setRole('merchant');
+                  setMerchantAuthed(false);
+                  setMerchantAuthStep('login');
+                }}>
                 <Text style={styles.primaryBtnText}>Esercente</Text>
               </TouchableOpacity>
             </Animated.View>
@@ -1129,6 +1238,228 @@ function App(): JSX.Element {
             </Animated.View>
           </View>
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  function renderClientAuth() {
+    return (
+      <SafeAreaView style={[backgroundStyle,{flex:1}]}>
+        <View style={styles.screen}>
+          <Text style={styles.title}>Accesso Cliente</Text>
+          <Text style={styles.subtitle}>Inquadra o inserisci il QR ricevuto dall’host</Text>
+          <TextInput
+            value={accessCode}
+            onChangeText={setAccessCode}
+            placeholder="Codice QR"
+            autoCapitalize="characters"
+            style={styles.input}
+          />
+          <TouchableOpacity
+            style={styles.primaryBtn}
+            onPress={async () => {
+              setLoading(true);
+              setStatus('');
+              try {
+                const res = await activateByCode(accessCode.trim());
+                setToken(res.token);
+                setAuthUserId(res.userId);
+                setAuthHostId(res.hostId);
+                setWallet(null);
+                setBookings([]);
+                await loadOffers();
+                await loadWallet();
+                await loadNotificationCounts();
+              } catch (err) {
+                const msg =
+                  typeof err === 'string'
+                    ? err
+                    : (err as any)?.body?.error || (err as any)?.message || JSON.stringify(err);
+                setStatus(msg);
+                Alert.alert('Errore', msg);
+              } finally {
+                setLoading(false);
+              }
+            }}>
+            <Text style={styles.primaryBtnText}>Attiva accesso</Text>
+          </TouchableOpacity>
+          {status ? <Text style={styles.errorText}>{status}</Text> : null}
+          <TouchableOpacity style={styles.ghostBtn} onPress={() => setRole(null)}>
+            <Text style={styles.ghostBtnText}>Indietro</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  function renderMerchantAuth() {
+    return (
+      <SafeAreaView style={[backgroundStyle,{flex:1}]}>
+        <ScrollView contentContainerStyle={styles.tabContent}>
+          <Text style={styles.title}>Accesso Esercente</Text>
+          {merchantAuthStep === 'login' ? (
+            <>
+              <TextInput
+                style={styles.input}
+                value={merchantAuthEmail}
+                onChangeText={setMerchantAuthEmail}
+                placeholder="Email"
+                autoCapitalize="none"
+                keyboardType="email-address"
+              />
+              <TextInput
+                style={styles.input}
+                value={merchantAuthPassword}
+                onChangeText={setMerchantAuthPassword}
+                placeholder="Password"
+                secureTextEntry
+              />
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={async () => {
+                  setMerchantAuthLoading(true);
+                  try {
+                    await merchantLogin({ email: merchantAuthEmail, password: merchantAuthPassword });
+                    setMerchantAuthStep('otp');
+                  } catch (e: any) {
+                    Alert.alert('Errore', e?.body?.error || e?.message || 'Errore login');
+                  } finally {
+                    setMerchantAuthLoading(false);
+                  }
+                }}>
+                <Text style={styles.primaryBtnText}>Invia OTP</Text>
+              </TouchableOpacity>
+              {merchantAuthLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              <TouchableOpacity style={styles.ghostBtn} onPress={() => setMerchantAuthStep('register')}>
+                <Text style={styles.ghostBtnText}>Crea un account</Text>
+              </TouchableOpacity>
+              {__DEV__ ? (
+                <TouchableOpacity
+                  style={styles.ghostBtn}
+                  onPress={() => {
+                    setMerchantAuthEmail('demo@popay.local');
+                    setMerchantAuthPassword('Demo1234!');
+                  }}>
+                  <Text style={styles.ghostBtnText}>Accesso demo</Text>
+                </TouchableOpacity>
+              ) : null}
+            </>
+          ) : null}
+
+          {merchantAuthStep === 'otp' ? (
+            <>
+              <Text style={styles.subtitle}>Inserisci il codice OTP ricevuto via email</Text>
+              <TextInput
+                style={styles.input}
+                value={merchantAuthCode}
+                onChangeText={setMerchantAuthCode}
+                placeholder="Codice OTP"
+                keyboardType="number-pad"
+              />
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={async () => {
+                  setMerchantAuthLoading(true);
+                    try {
+                      const res = await merchantVerifyOtp({ email: merchantAuthEmail, code: merchantAuthCode });
+                      setMerchantIdInput(String(res.businessId));
+                      setMerchantAuthed(true);
+                      setMerchantTab('commercial');
+                      setCommercialExpanded(true);
+                    } catch (e: any) {
+                    Alert.alert('Errore', e?.body?.error || e?.message || 'Errore OTP');
+                  } finally {
+                    setMerchantAuthLoading(false);
+                  }
+                }}>
+                <Text style={styles.primaryBtnText}>Verifica OTP</Text>
+              </TouchableOpacity>
+              {merchantAuthLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              <TouchableOpacity style={styles.ghostBtn} onPress={() => setMerchantAuthStep('login')}>
+                <Text style={styles.ghostBtnText}>Torna al login</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+
+          {merchantAuthStep === 'register' ? (
+            <>
+              <Text style={styles.subtitle}>Registrazione esercente</Text>
+              <TextInput style={styles.input} value={registerLegalName} onChangeText={setRegisterLegalName} placeholder="Ragione sociale" />
+              <TextInput style={styles.input} value={registerBusinessName} onChangeText={setRegisterBusinessName} placeholder="Nome attività" />
+              <TextInput style={styles.input} value={registerEmail} onChangeText={setRegisterEmail} placeholder="Email" autoCapitalize="none" keyboardType="email-address" />
+              <TextInput style={styles.input} value={registerPhone} onChangeText={setRegisterPhone} placeholder="Telefono" keyboardType="phone-pad" />
+              <TextInput style={styles.input} value={registerVatNumber} onChangeText={setRegisterVatNumber} placeholder="P. IVA" autoCapitalize="characters" />
+              <TextInput style={styles.input} value={registerAddress} onChangeText={setRegisterAddress} placeholder="Indirizzo" />
+              <TextInput style={styles.input} value={registerCity} onChangeText={setRegisterCity} placeholder="Città" />
+              <TextInput style={styles.input} value={registerPassword} onChangeText={setRegisterPassword} placeholder="Password" secureTextEntry />
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={async () => {
+                  setMerchantAuthLoading(true);
+                  try {
+                    await merchantRegister({
+                      email: registerEmail,
+                      password: registerPassword,
+                      legalName: registerLegalName,
+                      businessName: registerBusinessName,
+                      phone: registerPhone,
+                      vatNumber: registerVatNumber,
+                      address: registerAddress,
+                      city: registerCity,
+                    });
+                    setMerchantAuthEmail(registerEmail);
+                    setMerchantAuthStep('verifyEmail');
+                  } catch (e: any) {
+                    Alert.alert('Errore', e?.body?.error || e?.message || 'Errore registrazione');
+                  } finally {
+                    setMerchantAuthLoading(false);
+                  }
+                }}>
+                <Text style={styles.primaryBtnText}>Registrati</Text>
+              </TouchableOpacity>
+              {merchantAuthLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              <TouchableOpacity style={styles.ghostBtn} onPress={() => setMerchantAuthStep('login')}>
+                <Text style={styles.ghostBtnText}>Hai già un account? Accedi</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+
+          {merchantAuthStep === 'verifyEmail' ? (
+            <>
+              <Text style={styles.subtitle}>Inserisci il codice di conferma email</Text>
+              <TextInput
+                style={styles.input}
+                value={merchantAuthCode}
+                onChangeText={setMerchantAuthCode}
+                placeholder="Codice email"
+                keyboardType="number-pad"
+              />
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={async () => {
+                  setMerchantAuthLoading(true);
+                  try {
+                    await merchantVerifyEmail({ email: merchantAuthEmail, code: merchantAuthCode });
+                    setMerchantAuthStep('login');
+                  } catch (e: any) {
+                    Alert.alert('Errore', e?.body?.error || e?.message || 'Errore verifica email');
+                  } finally {
+                    setMerchantAuthLoading(false);
+                  }
+                }}>
+                <Text style={styles.primaryBtnText}>Verifica email</Text>
+              </TouchableOpacity>
+              {merchantAuthLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
+              <TouchableOpacity style={styles.ghostBtn} onPress={() => setMerchantAuthStep('login')}>
+                <Text style={styles.ghostBtnText}>Torna al login</Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+
+          <TouchableOpacity style={styles.ghostBtn} onPress={() => setRole(null)}>
+            <Text style={styles.ghostBtnText}>Indietro</Text>
+          </TouchableOpacity>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -1148,6 +1479,7 @@ function App(): JSX.Element {
       : null;
     const merchantMenuItems: { key: MerchantTab; label: string }[] = [
       { key: 'profile', label: 'Profilo' },
+      { key: 'commercial', label: 'Info commerciali' },
       { key: 'demand', label: 'Domanda in corso' },
       { key: 'offers', label: 'Lancia offerta' },
       { key: 'reservations', label: 'Prenotazioni' },
@@ -1327,6 +1659,136 @@ function App(): JSX.Element {
                   <Text style={styles.cardMeta}>Tocca per visualizzare l’elenco.</Text>
                 )}
               </View>
+            </>
+          ) : merchantTab === 'commercial' ? (
+            <>
+              <Text style={styles.subtitle}>Informazioni commerciali</Text>
+              <Text style={styles.cardMeta}>
+                Queste informazioni aiutano PoPay a stimare la domanda in base ai servizi offerti e alle fasce orarie.
+                Seleziona il tipo di attività e almeno 3 punti di forza.
+              </Text>
+              <View style={styles.card}>
+                <Text style={styles.cardMeta}>Tipo attività</Text>
+                <TouchableOpacity style={styles.input} onPress={() => setShowActivityOptions(true)}>
+                  <Text>{commercialActivityType || 'Seleziona attività'}</Text>
+                </TouchableOpacity>
+              </View>
+              {commercialActivityType ? (
+                <View style={styles.card}>
+                  <View style={styles.rowBetween}>
+                    <Text style={styles.cardMeta}>Punti di forza</Text>
+                    <TouchableOpacity style={styles.ghostBtn} onPress={() => setShowStrengthOptions(true)}>
+                      <Text style={styles.ghostBtnText}>Seleziona</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.cardMeta}>Seleziona almeno 3 voci e imposta la fascia oraria.</Text>
+                  {commercialWindows.map((w) => (
+                    <View key={w.label} style={styles.commercialRow}>
+                      <Text style={[styles.cardMeta, styles.commercialLabel]}>{w.label}</Text>
+                      <View style={styles.timeCol}>
+                        <Text style={styles.timeLabel}>Inizio</Text>
+                        <View style={styles.timeSelectRow}>
+                          <TouchableOpacity
+                            style={styles.timeSelect}
+                            onPress={() => setOpenTimeMenu({ label: w.label, field: 'start', part: 'hour' })}>
+                            <Text style={styles.timeSelectText}>{(w.start || '09:00').split(':')[0]}</Text>
+                          </TouchableOpacity>
+                          <Text style={styles.timeColon}>:</Text>
+                          <TouchableOpacity
+                            style={styles.timeSelect}
+                            onPress={() => setOpenTimeMenu({ label: w.label, field: 'start', part: 'minute' })}>
+                            <Text style={styles.timeSelectText}>{(w.start || '09:00').split(':')[1]}</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                      <View style={styles.timeCol}>
+                        <Text style={styles.timeLabel}>Fine</Text>
+                        <View style={styles.timeSelectRow}>
+                          <TouchableOpacity
+                            style={styles.timeSelect}
+                            onPress={() => setOpenTimeMenu({ label: w.label, field: 'end', part: 'hour' })}>
+                            <Text style={styles.timeSelectText}>{(w.end || '12:00').split(':')[0]}</Text>
+                          </TouchableOpacity>
+                          <Text style={styles.timeColon}>:</Text>
+                          <TouchableOpacity
+                            style={styles.timeSelect}
+                            onPress={() => setOpenTimeMenu({ label: w.label, field: 'end', part: 'minute' })}>
+                            <Text style={styles.timeSelectText}>{(w.end || '12:00').split(':')[1]}</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.removeBtn}
+                        onPress={() => setCommercialWindows((prev) => prev.filter((x) => x.label !== w.label))}>
+                        <Text style={styles.removeBtnText}>Rimuovi</Text>
+                      </TouchableOpacity>
+                      {openTimeMenu && openTimeMenu.label === w.label ? (
+                        <View style={styles.timeOptionsRow}>
+                          {(openTimeMenu.part === 'hour' ? HOUR_OPTIONS : MINUTE_OPTIONS).map((opt) => (
+                            <TouchableOpacity
+                              key={`${openTimeMenu.field}-${openTimeMenu.part}-${opt}`}
+                              style={styles.optionItem}
+                              onPress={() => {
+                                setCommercialWindows((prev) =>
+                                  prev.map((x) => {
+                                    if (x.label !== w.label) return x;
+                                    const [h, m] = (openTimeMenu.field === 'start' ? x.start : x.end).split(':');
+                                    const nextHour = openTimeMenu.part === 'hour' ? opt : h;
+                                    const nextMinute = openTimeMenu.part === 'minute' ? opt : m;
+                                    const nextTime = `${nextHour}:${nextMinute}`;
+                                    return openTimeMenu.field === 'start'
+                                      ? { ...x, start: nextTime }
+                                      : { ...x, end: nextTime };
+                                  })
+                                );
+                                setOpenTimeMenu(null);
+                              }}>
+                              <Text style={styles.optionText}>{opt}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      ) : null}
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={async () => {
+                  const merchantId = Number(merchantIdInput);
+                  if (!Number.isFinite(merchantId)) {
+                    Alert.alert('Errore', 'Merchant ID non valido');
+                    return;
+                  }
+                  if (!commercialActivityType) {
+                    Alert.alert('Errore', 'Seleziona il tipo attività');
+                    return;
+                  }
+                  if (commercialWindows.length < 3) {
+                    Alert.alert('Errore', 'Seleziona almeno 3 punti di forza');
+                    return;
+                  }
+                  if (commercialWindows.some((w) => !w.start || !w.end)) {
+                    Alert.alert('Errore', 'Inserisci orari validi per ogni punto di forza');
+                    return;
+                  }
+                  setCommercialLoading(true);
+                  try {
+                    await updateMerchantDemandWindows(merchantId, {
+                      activityType: commercialActivityType,
+                      windows: commercialWindows.map((w) => ({ label: w.label, start: w.start, end: w.end })),
+                    });
+                    Alert.alert('Salvato', 'Informazioni commerciali aggiornate');
+                    loadMerchantDemand();
+                  } catch (e: any) {
+                    Alert.alert('Errore', e?.body?.error || e?.message || 'Errore salvataggio');
+                  } finally {
+                    setCommercialLoading(false);
+                  }
+                }}>
+                <Text style={styles.primaryBtnText}>Salva informazioni</Text>
+              </TouchableOpacity>
+              {commercialLoading ? <ActivityIndicator style={{ marginTop: 8 }} /> : null}
             </>
           ) : merchantTab === 'payments' ? (
             <>
@@ -1767,40 +2229,9 @@ function App(): JSX.Element {
                 </View>
               ) : null}
               <View style={styles.card}>
-                <Text style={styles.cardMeta}>Tipo attività</Text>
-                <TextInput style={styles.input} value={demandActivityType} onChangeText={setDemandActivityType} />
-                <Text style={styles.cardMeta}>Finestra 1</Text>
-                <View style={styles.row}>
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window1Label} onChangeText={setWindow1Label} placeholder="Label" />
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window1Start} onChangeText={setWindow1Start} placeholder="HH:MM" />
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window1End} onChangeText={setWindow1End} placeholder="HH:MM" />
-                </View>
-                <Text style={styles.cardMeta}>Finestra 2</Text>
-                <View style={styles.row}>
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window2Label} onChangeText={setWindow2Label} placeholder="Label" />
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window2Start} onChangeText={setWindow2Start} placeholder="HH:MM" />
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window2End} onChangeText={setWindow2End} placeholder="HH:MM" />
-                </View>
-                <Text style={styles.cardMeta}>Finestra 3</Text>
-                <View style={styles.row}>
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window3Label} onChangeText={setWindow3Label} placeholder="Label" />
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window3Start} onChangeText={setWindow3Start} placeholder="HH:MM" />
-                  <TextInput style={[styles.input, styles.inputHalf]} value={window3End} onChangeText={setWindow3End} placeholder="HH:MM" />
-                </View>
-                <TouchableOpacity
-                  style={styles.primaryBtn}
-                  onPress={async () => {
-                    const merchantId = Number(merchantIdInput);
-                    if (!Number.isFinite(merchantId)) return;
-                    await updateMerchantDemandWindows(merchantId, {
-                      activityType: demandActivityType,
-                      window1: { label: window1Label, start: window1Start, end: window1End },
-                      window2: { label: window2Label, start: window2Start, end: window2End },
-                      window3: { label: window3Label, start: window3Start, end: window3End },
-                    });
-                    loadMerchantDemand();
-                  }}>
-                  <Text style={styles.primaryBtnText}>Salva finestre</Text>
+                <Text style={styles.cardMeta}>Le informazioni commerciali si configurano nella sezione dedicata.</Text>
+                <TouchableOpacity style={styles.ghostBtn} onPress={() => setMerchantTab('commercial')}>
+                  <Text style={styles.ghostBtnText}>Vai a Informazioni commerciali</Text>
                 </TouchableOpacity>
               </View>
             </>
@@ -1851,6 +2282,58 @@ function App(): JSX.Element {
             </>
           )}
         </ScrollView>
+        <Modal visible={showActivityOptions} transparent animationType="fade" onRequestClose={() => setShowActivityOptions(false)}>
+          <View style={styles.optionOverlay}>
+            <TouchableOpacity style={styles.optionBackdrop} activeOpacity={1} onPress={() => setShowActivityOptions(false)} />
+            <View style={styles.optionSheet}>
+              <Text style={styles.cardTitle}>Seleziona tipo attività</Text>
+              <ScrollView style={styles.optionList}>
+                {ACTIVITY_TYPES.map((t) => (
+                  <TouchableOpacity
+                    key={t}
+                    style={[styles.optionItem, commercialActivityType === t ? styles.optionItemActive : null]}
+                    onPress={() => {
+                      setCommercialActivityType(t);
+                      setCommercialWindows([]);
+                      setShowActivityOptions(false);
+                    }}>
+                    <Text style={styles.optionText}>{t}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+        <Modal visible={showStrengthOptions} transparent animationType="fade" onRequestClose={() => setShowStrengthOptions(false)}>
+          <View style={styles.optionOverlay}>
+            <TouchableOpacity style={styles.optionBackdrop} activeOpacity={1} onPress={() => setShowStrengthOptions(false)} />
+            <View style={styles.optionSheet}>
+              <Text style={styles.cardTitle}>Seleziona punti di forza</Text>
+              <ScrollView style={styles.optionList}>
+                {(commercialActivityType ? STRENGTHS_BY_ACTIVITY[commercialActivityType] : [])?.map((s) => {
+                  const selected = commercialWindows.find((w) => w.label === s);
+                  return (
+                    <TouchableOpacity
+                      key={s}
+                      style={[styles.optionItem, selected ? styles.optionItemActive : null]}
+                      onPress={() => {
+                        if (selected) {
+                          setCommercialWindows((prev) => prev.filter((w) => w.label !== s));
+                        } else {
+                          setCommercialWindows((prev) => [...prev, { label: s, start: '09:00', end: '12:00' }]);
+                        }
+                      }}>
+                      <Text style={styles.optionText}>{s}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => setShowStrengthOptions(false)}>
+                <Text style={styles.primaryBtnText}>Fatto</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
         <Modal visible={merchantMenuVisible} transparent animationType="slide" onRequestClose={() => setMerchantMenuVisible(false)}>
           <View style={styles.drawerOverlay}>
             <TouchableOpacity style={styles.drawerBackdrop} activeOpacity={1} onPress={() => setMerchantMenuVisible(false)} />
@@ -1943,9 +2426,9 @@ function App(): JSX.Element {
   return (
     <View style={{flex:1}}>
       {role === null ? renderRolePicker() : null}
-      {role === 'merchant' ? renderMerchant() : null}
+      {role === 'merchant' ? (merchantAuthed ? renderMerchant() : renderMerchantAuth()) : null}
       {role === 'host' ? renderHost() : null}
-      {role === 'client' ? (
+      {role === 'client' ? (!token ? renderClientAuth() : (
         <>
           <SafeAreaView style={[backgroundStyle,{flex:1}]}>
             <View style={styles.bgGlowTop} />
@@ -1982,7 +2465,7 @@ function App(): JSX.Element {
             </SafeAreaView>
           </Modal>
         </>
-      ) : null}
+      )) : null}
     </View>
   );
 }
@@ -2169,6 +2652,17 @@ const styles = StyleSheet.create({
     gap: 8,
     flexWrap: 'wrap',
   },
+  rowWrap: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginTop: 6,
+  },
+  rowBetween: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   primaryBtn: {
     backgroundColor: THEME.coral,
     paddingVertical: 12,
@@ -2314,6 +2808,102 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 12,
+  },
+  optionOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15,42,61,0.35)',
+    justifyContent: 'flex-end',
+  },
+  optionBackdrop: {
+    flex: 1,
+  },
+  optionSheet: {
+    backgroundColor: THEME.card,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 20,
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    maxHeight: '70%',
+  },
+  optionList: {
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  optionItem: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    marginBottom: 8,
+    backgroundColor: THEME.bgAlt,
+  },
+  optionItemActive: {
+    borderWidth: 1,
+    borderColor: THEME.coral,
+  },
+  optionText: {
+    color: THEME.ink,
+    fontWeight: '700',
+  },
+  commercialRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginTop: 8,
+  },
+  commercialLabel: {
+    minWidth: 100,
+  },
+  timeLabel: {
+    fontSize: 12,
+    color: THEME.inkSoft,
+    marginBottom: 4,
+  },
+  removeBtn: {
+    backgroundColor: THEME.bgAlt,
+    borderWidth: 1,
+    borderColor: THEME.border,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  removeBtnText: {
+    color: THEME.inkSoft,
+    fontWeight: '700',
+  },
+  timeSelectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  timeSelect: {
+    borderWidth: 1,
+    borderColor: THEME.border,
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: THEME.card,
+    minWidth: 52,
+    alignItems: 'center',
+  },
+  timeSelectText: {
+    color: THEME.ink,
+    fontWeight: '700',
+  },
+  timeColon: {
+    color: THEME.inkSoft,
+    fontWeight: '700',
+  },
+  timeOptionsRow: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  timeCol: {
+    flex: 1,
   },
   roleWelcome: {
     fontSize: 22,
