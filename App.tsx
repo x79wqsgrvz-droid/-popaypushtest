@@ -23,12 +23,14 @@ import {
   Linking,
   Platform,
   PermissionsAndroid,
+  Animated,
 } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
 import {Colors} from 'react-native/Libraries/NewAppScreen';
 import QRCode from 'react-native-qrcode-svg';
 import {Camera, useCameraDevice, useCodeScanner} from 'react-native-vision-camera';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   activate,
   activateByCode,
@@ -114,6 +116,15 @@ function App(): JSX.Element {
   const [merchantNotificationsCount, setMerchantNotificationsCount] = useState(0);
   const [merchantNotificationOpenId, setMerchantNotificationOpenId] = useState<number | null>(null);
   const NOTIFICATIONS_TTL_DAYS = 7;
+  const rolePromptOpacity = React.useRef(new Animated.Value(0)).current;
+  const roleBtn1X = React.useRef(new Animated.Value(-40)).current;
+  const roleBtn2X = React.useRef(new Animated.Value(-40)).current;
+  const roleBtn3X = React.useRef(new Animated.Value(-40)).current;
+  const roleBtn1Opacity = React.useRef(new Animated.Value(0)).current;
+  const roleBtn2Opacity = React.useRef(new Animated.Value(0)).current;
+  const roleBtn3Opacity = React.useRef(new Animated.Value(0)).current;
+  const roleIntroPlayed = React.useRef(false);
+  const [roleIntroReady, setRoleIntroReady] = useState(false);
   const [merchantLoading, setMerchantLoading] = useState(false);
   const [merchantPrepare, setMerchantPrepare] = useState<any | null>(null);
   const [merchantQrVisible, setMerchantQrVisible] = useState(false);
@@ -343,6 +354,50 @@ function App(): JSX.Element {
     const t = setInterval(() => loadMerchantDemand(), 5 * 60 * 1000);
     return () => clearInterval(t);
   }, [role, merchantTab]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function initIntro() {
+      if (role !== null) return;
+      if (roleIntroPlayed.current) return;
+      const seen = await AsyncStorage.getItem('popay_welcome_seen');
+      if (seen) return;
+      if (cancelled) return;
+      roleIntroPlayed.current = true;
+      setRoleIntroReady(true);
+      await AsyncStorage.setItem('popay_welcome_seen', '1');
+      rolePromptOpacity.setValue(0);
+      roleBtn1X.setValue(-40);
+      roleBtn2X.setValue(-40);
+      roleBtn3X.setValue(-40);
+      roleBtn1Opacity.setValue(0);
+      roleBtn2Opacity.setValue(0);
+      roleBtn3Opacity.setValue(0);
+      Animated.sequence([
+        Animated.timing(rolePromptOpacity, {
+          toValue: 1,
+          duration: 900,
+          useNativeDriver: true,
+        }),
+        Animated.stagger(180, [
+          Animated.parallel([
+            Animated.timing(roleBtn1X, { toValue: 0, duration: 450, useNativeDriver: true }),
+            Animated.timing(roleBtn1Opacity, { toValue: 1, duration: 450, useNativeDriver: true }),
+          ]),
+          Animated.parallel([
+            Animated.timing(roleBtn2X, { toValue: 0, duration: 450, useNativeDriver: true }),
+            Animated.timing(roleBtn2Opacity, { toValue: 1, duration: 450, useNativeDriver: true }),
+          ]),
+          Animated.parallel([
+            Animated.timing(roleBtn3X, { toValue: 0, duration: 450, useNativeDriver: true }),
+            Animated.timing(roleBtn3Opacity, { toValue: 1, duration: 450, useNativeDriver: true }),
+          ]),
+        ]),
+      ]).start();
+    }
+    initIntro();
+    return () => { cancelled = true; };
+  }, [role]);
 
   useEffect(() => {
     if (role !== 'merchant') return;
@@ -1052,16 +1107,27 @@ function App(): JSX.Element {
     return (
       <SafeAreaView style={[backgroundStyle,{flex:1}]}>
         <View style={styles.screen}>
-          <Text style={styles.title}>Seleziona ruolo</Text>
-          <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('client')}>
-            <Text style={styles.primaryBtnText}>Cliente</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('merchant')}>
-            <Text style={styles.primaryBtnText}>Esercente</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('host')}>
-            <Text style={styles.primaryBtnText}>Host</Text>
-          </TouchableOpacity>
+          <Text style={styles.roleWelcome}>PoPay ti da il benvenuto</Text>
+          <Animated.Text style={[styles.rolePrompt, { opacity: roleIntroReady ? rolePromptOpacity : 1 }]}>
+            Dimmi chi sei e ti dirò cosa cerchi
+          </Animated.Text>
+          <View style={styles.roleButtons}>
+            <Animated.View style={{ transform: [{ translateX: roleIntroReady ? roleBtn1X : 0 }], opacity: roleIntroReady ? roleBtn1Opacity : 1 }}>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('client')}>
+                <Text style={styles.primaryBtnText}>Cliente</Text>
+              </TouchableOpacity>
+            </Animated.View>
+            <Animated.View style={{ transform: [{ translateX: roleIntroReady ? roleBtn2X : 0 }], opacity: roleIntroReady ? roleBtn2Opacity : 1 }}>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('merchant')}>
+                <Text style={styles.primaryBtnText}>Esercente</Text>
+              </TouchableOpacity>
+            </Animated.View>
+            <Animated.View style={{ transform: [{ translateX: roleIntroReady ? roleBtn3X : 0 }], opacity: roleIntroReady ? roleBtn3Opacity : 1 }}>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => setRole('host')}>
+                <Text style={styles.primaryBtnText}>Host</Text>
+              </TouchableOpacity>
+            </Animated.View>
+          </View>
         </View>
       </SafeAreaView>
     );
@@ -2248,6 +2314,23 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '700',
     fontSize: 12,
+  },
+  roleWelcome: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: THEME.ink,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  rolePrompt: {
+    fontSize: 16,
+    color: THEME.inkSoft,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  roleButtons: {
+    gap: 10,
+    width: '100%',
   },
   merchantHeader: {
     flexDirection: 'row',
